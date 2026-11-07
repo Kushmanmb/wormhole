@@ -107,12 +107,12 @@ func (e *mockConnectorForBatchPoller) RawCallContext(ctx context.Context, result
 func (e *mockConnectorForBatchPoller) RawBatchCallContext(ctx context.Context, b []ethRpc.BatchElem) (err error) {
 	e.mutex.Lock()
 	if e.err != nil {
-		err := e.err
+		retErr := e.err
 		if !e.persistentError {
 			e.err = nil
 		}
 		e.mutex.Unlock()
-		return err
+		return retErr
 	}
 
 	for i, entry := range b {
@@ -185,6 +185,8 @@ func (e *mockConnectorForBatchPoller) expectedHash() ethCommon.Hash {
 func (e *mockConnectorForBatchPoller) Client() *ethClient.Client {
 	return e.client
 }
+
+func (e *mockConnectorForBatchPoller) Close() {}
 
 type mockSubscription struct {
 	errC chan error
@@ -291,7 +293,7 @@ func TestBatchPoller(t *testing.T) {
 	}()
 
 	// First sleep a bit and make sure there were no start up errors and the initial blocks were published.
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -302,7 +304,7 @@ func TestBatchPoller(t *testing.T) {
 	// Post the first new block and verify we get it.
 	baseConnector.setBlockNumbers(0x309a0d, 0x309a0d, 0x309a0d)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -312,7 +314,7 @@ func TestBatchPoller(t *testing.T) {
 
 	// Sleep some more and verify we don't see any more blocks, since we haven't posted a new one.
 	baseConnector.setBlockNumbers(0x309a0d, 0x309a0d, 0)
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -321,7 +323,7 @@ func TestBatchPoller(t *testing.T) {
 
 	// Post the next block and verify we get it.
 	baseConnector.setBlockNumbers(0x309a0e, 0x309a0e, 0x309a0e)
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -335,7 +337,7 @@ func TestBatchPoller(t *testing.T) {
 
 	mutex.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -348,7 +350,7 @@ func TestBatchPoller(t *testing.T) {
 	baseConnector.setBlockNumbers(0x309a0f, 0x309a0f, 0)
 	mutex.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -359,7 +361,7 @@ func TestBatchPoller(t *testing.T) {
 	// Post old finalized and safe blocks and we should not hear about them.
 	baseConnector.setBlockNumbers(0x309a0c, 0x309a0c, 0)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -369,7 +371,7 @@ func TestBatchPoller(t *testing.T) {
 	// But we should keep going when we get a new one.
 	baseConnector.setBlockNumbers(0x309a10, 0x309a10, 0x309a10)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -387,7 +389,7 @@ func TestBatchPoller(t *testing.T) {
 	)
 	mutex.Unlock()
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -434,7 +436,7 @@ func TestBatchPoller(t *testing.T) {
 	// A single RPC error should not be returned to us.
 	baseConnector.setSingleError(fmt.Errorf("RPC failed"))
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -445,7 +447,7 @@ func TestBatchPoller(t *testing.T) {
 	// And we should be able to continue after a single error.
 	baseConnector.setBlockNumbers(0x309a13, 0x309a13, 0x309a13)
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	require.NoError(t, publishedErr)
 	require.NoError(t, publishedSubErr)
@@ -461,7 +463,7 @@ func TestBatchPoller(t *testing.T) {
 	publishedErr = nil
 	baseConnector.setError(fmt.Errorf("RPC failed"))
 
-	time.Sleep(10 * time.Millisecond)
+	time.Sleep(10 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	mutex.Lock()
 	assert.Error(t, publishedErr)
 	require.NoError(t, publishedSubErr)

@@ -100,6 +100,8 @@ const MaxSafeInputSize = 128 * 1024 * 1024 // 128MB (arbitrary)
 
 var ErrInputTooLarge = errors.New("input data exceeds maximum allowed size")
 
+var ErrInvalidReadLimit = errors.New("read limit must be between 1 and MaxSafeInputSize")
+
 var (
 	ErrBinaryWrite         = errors.New("failed to write binary data")
 	ErrTxIDTooLong         = errors.New("field TxID too long")
@@ -163,6 +165,34 @@ func (v VerificationState) String() string {
 }
 
 type MessagePublication struct {
+	// TxID is the chain-native transaction identifier where the wormhole
+	// message was emitted. TxID is per-guardian metadata: it is NOT hashed
+	// into the VAA signing digest (see CreateVAA / CreateDigest), so guardians
+	// can disagree on TxID without producing different VAAs.
+	//
+	// TxID IS, however, part of the global-accountant contract's matching key
+	// within a pending transfer. PENDING_TRANSFERS is keyed by
+	// (emitter_chain, emitter_address, sequence), but within that key the
+	// contract stores a Vec<Data> whose entries are uniquely identified by
+	// (guardian_set_index, digest, tx_hash) — see
+	// cosmwasm/contracts/global-accountant/src/contract.rs. Signatures only
+	// merge across observations with matching tx_hash, so if guardians submit
+	// observations for the same VAA but with different TxIDs, their signatures
+	// land in separate Data entries and quorum is counted independently per
+	// entry. If no single entry reaches quorum on its own, the transfer
+	// stalls at the accountant — even when there are enough total signatures
+	// for the same VAA digest.
+	//
+	// Code paths that aggregate observations across guardians (e.g. delegate
+	// quorum on a canonical) should converge on a single TxID before
+	// submitting to the accountant; see the consensusTxID helper and
+	// NormalizeForDelegateConsensus in pkg/processor. That helper picks the
+	// bucket-majority TxID deterministically, which is sufficient for
+	// convergence when one TxID has a clear majority that's stable under
+	// observation arrival order — but with a near-even split, canonicals
+	// whose buckets reach quorum at different observation subsets can still
+	// pick different majorities; recovery for that case is the audit /
+	// missing_observations reobs flow rather than the delegate-quorum path.
 	TxID      []byte
 	Timestamp time.Time
 
@@ -211,6 +241,51 @@ func (msg *MessagePublication) MessageIDString() string {
 
 func (msg *MessagePublication) VerificationState() VerificationState {
 	return msg.verificationState
+}
+
+// NormalizeForDelegateConsensus resets per-guardian metadata on the consensus
+// MP that a canonical guardian forwards downstream after delegate quorum.
+//
+// The purpose is to keep the downstream pipeline (and any state the canonical
+// persists about the message) independent of *which* delegate's observation
+// happened to push the bucket over quorum. Without this, every per-guardian
+// field on the MP would last-writer-wins — different canonicals would
+// disagree on IsReobservation / Unreliable / verificationState based purely
+// on observation arrival order, and the same canonical's logs/database row
+// would depend on a delegate-set race. Resetting these fields to canonical-
+// safe defaults gives a single, reproducible consensus MP across canonicals.
+//
+// The fields hashed into the VAA signing digest (Timestamp, Nonce, Sequence,
+// ConsistencyLevel, EmitterChain, EmitterAddress, Payload) are the consensus
+// inputs and are preserved. TxID is preserved as-is here; it is the caller's
+// responsibility to pick a deterministic TxID before invoking this method,
+// because while TxID is not in the VAA signing digest, it IS part of the
+// global-accountant contract's per-entry match — different TxIDs across
+// canonicals split signatures at the accountant and can prevent quorum
+// there. See the TxID field godoc and the consensusTxID helper in
+// pkg/processor.
+//
+// The fields reset here are also per-guardian metadata, but unlike TxID they
+// have safe canonical defaults that don't depend on any single delegate:
+//
+//   - IsReobservation: forced true. Canonicals can't trigger a reobservation
+//     for a delegated chain (no watcher is running for it), so treat the
+//     consensus result as already a reobservation and avoid further cycles.
+//   - Unreliable: forced false. Unreliable=true is an SVM-only signal that
+//     the source chain can't re-observe the transaction, so the cleanup loop
+//     expires stuck observations after 5 minutes instead of issuing a
+//     re-observation request (see pkg/processor/cleanup.go). A delegate-derived
+//     MP doesn't carry that constraint at the canonical, so leave it reliable.
+//   - verificationState: forced NotVerified. The canonical did not run the
+//     transfer verifier on the underlying transaction and per-guardian
+//     verification results are not part of consensus. NotVerified is the
+//     honest signal here ("we did not attempt to verify"), as opposed to
+//     NotApplicable, which is reserved for "we determined verification was
+//     not required for this message" (e.g. non-token-transfer payloads).
+func (msg *MessagePublication) NormalizeForDelegateConsensus() {
+	msg.IsReobservation = true
+	msg.Unreliable = false
+	msg.verificationState = NotVerified
 }
 
 // SetVerificationState is the setter for verificationState. Returns an error if called in a way that likely indicates a programming mistake.
@@ -689,25 +764,36 @@ func validBinaryBool(b byte) bool {
 // SafeRead reads from r with a size limit to prevent memory exhaustion attacks.
 // It returns an error if the input exceeds MaxSafeInputSize.
 func SafeRead(r io.Reader) ([]byte, error) {
-	// Create a LimitReader that allows reading up to MaxSafeInputSize + 1 bytes.
-	// The extra byte is specifically to detect if the input stream *exceeds* MaxSafeInputSize.
-	lr := io.LimitReader(r, MaxSafeInputSize+1)
+	return SafeReadN(r, MaxSafeInputSize)
+}
 
-	//nolint:forbidigo // SafeRead is intended as a convenient and safe wrapper for ReadAll.
+// SafeReadN is SafeRead with a caller-chosen limit of n bytes, for callers that need a tighter
+// bound than MaxSafeInputSize. It returns ErrInputTooLarge if the input exceeds n bytes, and
+// ErrInvalidReadLimit if n is not between 1 and MaxSafeInputSize.
+func SafeReadN(r io.Reader, n int) ([]byte, error) {
+	if n < 1 || n > MaxSafeInputSize {
+		return nil, ErrInvalidReadLimit
+	}
+
+	// Create a LimitReader that allows reading up to n + 1 bytes.
+	// The extra byte is specifically to detect if the input stream *exceeds* n.
+	lr := io.LimitReader(r, int64(n)+1)
+
+	//nolint:forbidigo // SafeReadN is intended as a convenient and safe wrapper for ReadAll.
 	b, err := io.ReadAll(lr)
 	if err != nil {
 		// Propagate any actual read errors from the underlying reader.
 		return nil, err
 	}
 
-	// If the length of the read bytes is greater than MaxSafeInputSize,
+	// If the length of the read bytes is greater than n,
 	// it means the original reader contained more data than allowed.
 	// In this case, we return an error instead of silently truncating.
-	if len(b) > MaxSafeInputSize {
+	if len(b) > n {
 		return nil, ErrInputTooLarge
 	}
 
-	// If err was nil and len(b) <= MaxSafeInputSize, it means we read all
+	// If err was nil and len(b) <= n, it means we read all
 	// available input (or up to the limit) without exceeding the maximum.
 	return b, nil
 }

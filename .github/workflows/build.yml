@@ -12,6 +12,7 @@ permissions:
 jobs:
   # Run the full Tilt build and wait for it to converge
   tilt:
+    if: github.repository == 'wormhole-foundation/wormhole'
     # in the future, we may want to run cheap lints, tests, and builds before firing up the expensive tilt test.
     # But for now, we'll kick-off everything at once
     # needs: [go-lint-and-tests, node, algorand, ethereum, terra, rust-lint-and-tests]
@@ -30,7 +31,9 @@ jobs:
       - name: Clear repository
         run: |
           rm -rf $GITHUB_WORKSPACE && mkdir $GITHUB_WORKSPACE
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Expand for link to Tilt dashboard (only available during build)
         run: >
           echo "Tilt progress dashboard: https://$DASHBOARD_URL"
@@ -49,17 +52,21 @@ jobs:
   node:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          go-version: "1.23.3"
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: node/go.mod
       - run: make node
 
   algorand:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.10"
       - run: pip install -r algorand/requirements.txt
@@ -68,40 +75,33 @@ jobs:
   ethereum:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
       - run: cd ethereum && make test-push0 && make test
-
-  relayer-ethereum:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
-        with:
-          node-version: "22"
-      - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
-      - run: cd relayer/ethereum && make test-push0 && make test
 
   ethereum-upgrade:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
       - name: Install Foundry
-        uses: foundry-rs/foundry-toolchain@v1
+        uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
       - run: cd clients/js && make install
       - run: cd ethereum && make test-upgrade
 
   solana:
     runs-on: ubuntu-24.04
-    container: ghcr.io/wormhole-foundation/solana:1.10.31@sha256:d31e8db926a1d3fbaa9d9211d9979023692614b7b64912651aba0383e8c01bad
+    container: ghcr.io/wormhole-foundation/solana:1.10.31-bookworm@sha256:0d7b5242417f0d9b4a99abe5b46c2151add535e913e8513875e2908f98602025
 
     env:
       RUSTFLAGS: -Dwarnings
@@ -110,21 +110,23 @@ jobs:
       CHAIN_ID: 1
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - name: Get rust toolchain version
         id: toolchain
         run: |
           RUST_VERSION="$(awk '/channel =/ { print substr($3, 2, length($3)-2) }' solana/rust-toolchain.toml)"
-          echo "::set-output name=version::${RUST_VERSION}"
+          echo "version=${RUST_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Get solana version
         id: solana
         run: |
           SOLANA_VERSION="$(awk '/solana-program =/ { print substr($3, 3, length($3)-3) }' solana/bridge/program/Cargo.toml)"
-          echo "::set-output name=version::${SOLANA_VERSION}"
+          echo "version=${SOLANA_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Cache rust toolchain
-        uses: actions/cache@v3
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         env:
           cache-name: solana-toolchain
         with:
@@ -138,13 +140,13 @@ jobs:
             ${{ runner.os }}-
 
       - name: Install rust toolchain
-        uses: dtolnay/rust-toolchain@55c7845fad90d0ae8b2e83715cb900e5e861e8cb
+        uses: dtolnay/rust-toolchain@55c7845fad90d0ae8b2e83715cb900e5e861e8cb # zizmor: ignore[superfluous-actions]
         with:
           toolchain: ${{ steps.toolchain.outputs.version }}
           components: "clippy,rustfmt"
 
       - name: Cache rust packages / build cache
-        uses: actions/cache@v3
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         env:
           cache-name: solana-rust-packages
         with:
@@ -202,7 +204,9 @@ jobs:
         working-directory: ./aptos
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Run tests via docker
         run: make test-docker
@@ -212,7 +216,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Run tests via docker
         run: cd sui && make test-docker
@@ -220,39 +226,34 @@ jobs:
   terra-2:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
       - run: cd cosmwasm/deployment/terra2 && make test
   cosmwasm:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
       - run: cd cosmwasm && make test
-
-  cli:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-node@v2
-        with:
-          node-version: "22"
-      - run: |
-          cd clients/js && make test
-          make docs
-          git diff --name-only --exit-code && echo "✅ Generated CLI docs match committed docs" || (echo "❌ Generated CLI docs differs from committed CLI docs, run \`make docs\` and commit the result" >&2 && exit 1)
 
   # Verify wormhole chain unit tests
   wormchain:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          # Pinned to match the Wormchain Docker images; go.mod only declares Go 1.19 compatibility.
           go-version: "1.19.9"
       - run: |
           cd wormchain
@@ -264,14 +265,17 @@ jobs:
   sdk_vaa:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          go-version: "1.23.3"
-      - run: cd sdk/vaa && go test && go test -v -fuzz FuzzCalculateQuorum -run FuzzCalculateQuorum -fuzztime 15s
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: "1.26.10"
+      - run: cd sdk/vaa && go test -v -fuzz FuzzCalculateQuorum -run FuzzCalculateQuorum -fuzztime 15s
 
   # Run Go linters
   node-lint:
+    if: github.repository == 'wormhole-foundation/wormhole'
     # The linter is slow enough that we want to run it on the self-hosted runner
     runs-on: tilt-kube-public
     concurrency:
@@ -281,18 +285,18 @@ jobs:
       - name: Clear repository
         run: |
           rm -rf $GITHUB_WORKSPACE && mkdir $GITHUB_WORKSPACE
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          go-version: "1.23.3"
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: node/go.mod
       - name: Install formatter
         run: go install golang.org/x/tools/cmd/goimports@v0.8.0
       - name: Formatting checks
         run: ./scripts/lint.sh -l -g format
-      - name: Install linters
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.8.0
       - name: Run linters
-        run: make generate && golangci-lint --version && ./scripts/lint.sh -g lint
+        run: make generate && ./scripts/lint.sh -g lint
       - name: Ensure generated proto matches
         run: |
           rm -rf node/pkg/proto
@@ -302,7 +306,9 @@ jobs:
   spellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       # Pinned version of the v6 tag, which is a lightweight and hence mutable tag
       - uses: streetsidesoftware/cspell-action@214db1e3138f326d33b7a6a51c92852e89ab0618
         with:
@@ -314,6 +320,7 @@ jobs:
 
   # Run Go tests
   node-tests:
+    if: github.repository == 'wormhole-foundation/wormhole'
     # The tests are slow enough that we want to run it on the self-hosted runner
     runs-on: tilt-kube-public
     concurrency:
@@ -323,13 +330,55 @@ jobs:
       - name: Clear repository
         run: |
           rm -rf $GITHUB_WORKSPACE && mkdir $GITHUB_WORKSPACE
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          go-version: "1.23.3"
-      # The go-ethereum and celo-blockchain packages both implement secp256k1 using the exact same header, but that causes duplicate symbols.
-      - name: Run golang tests
-        run: cd node && go test -v -timeout 5m -race ./...
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: node/go.mod
+      # /usr/bin/true replaces test-binary execution, so live integration tests are compiled but never run.
+      - name: Compile integration-tagged Go tests without running them
+        run: make test-integration-compile
+      - name: Run golang tests with coverage
+        run: make test-coverage
+      - name: Upload coverage output
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        with:
+          name: node-coverage-output
+          path: coverage.txt
+
+  node-coverage-check:
+    needs: node-tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: scripts/coverage-check/go.mod
+      - name: Download coverage output
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: node-coverage-output
+          path: .
+      - name: Build coverage check tool
+        run: make build-coverage-check
+      - name: Check coverage against baseline
+        run: ./coverage-check
+
+  # Run unit tests for the custom Go linters
+  linter-tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: linters/go.mod
+      - name: Run custom linter tests
+        run: make -C linters test
 
   # Run Rust lints and tests
   rust-lint-and-tests:
@@ -357,10 +406,10 @@ jobs:
           # SVM directory (shims code)
           - path: svm/wormhole-core-shims/Cargo.toml
             args: "--workspace --no-default-features --features solana" # The crate by default requires environment variables. If solana is specified, mainnet values are used.
-            test_args: "--lib"  # Skip integration tests; they require compiled BPF programs
+            test_args: "--lib" # Skip integration tests; they require compiled BPF programs
           - path: svm/wormhole-core-shims/anchor/Cargo.toml
             args: "--workspace"
-            test_args: "--lib"  # Skip doctests; anchor interfaces lack solana_program dependency
+            test_args: "--lib" # Skip doctests; anchor interfaces lack solana_program dependency
           # Token Metadata parser for SVM token bridge
           - path: solana/modules/token_bridge/token_metadata_parser/Cargo.toml
             args: "--workspace"
@@ -368,7 +417,9 @@ jobs:
     name: rust-lint-and-tests (${{ matrix.manifest.path }})
     steps:
       - name: Check out source
-        uses: actions/checkout@v3
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Get rust toolchain version
         id: toolchain
@@ -386,10 +437,10 @@ jobs:
           else
             RUST_VERSION="stable"
           fi
-          echo "::set-output name=version::${RUST_VERSION}"
+          echo "version=${RUST_VERSION}" >> "$GITHUB_OUTPUT"
 
       - name: Install rust toolchain
-        uses: dtolnay/rust-toolchain@55c7845fad90d0ae8b2e83715cb900e5e861e8cb
+        uses: dtolnay/rust-toolchain@55c7845fad90d0ae8b2e83715cb900e5e861e8cb # zizmor: ignore[superfluous-actions]
         with:
           toolchain: ${{ steps.toolchain.outputs.version }}
           components: "clippy,rustfmt"
@@ -402,11 +453,11 @@ jobs:
           LOCKFILE="$(dirname "${MANIFEST}")/Cargo.lock"
           NAME="${MANIFEST%%/*}"
           HASH="$(sha256sum "${LOCKFILE}" | awk '{ print $1 }')"
-          echo "::set-output name=name::${NAME}"
-          echo "::set-output name=hash::${HASH}"
+          echo "name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
 
       - name: Cache rust packages
-        uses: actions/cache@v3
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ~/.cargo/registry
           key: ${{ runner.os }}-build-${{ steps.cachekey.outputs.name }}-${{ steps.cachekey.outputs.hash }}
@@ -426,21 +477,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - run: chmod 755 ./scripts/check-docker-pin.sh
       - run: ./scripts/check-docker-pin.sh
   npm-packages:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source
-        uses: actions/checkout@v2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
       - run: chmod 755 ./scripts/check-npm-package-scopes.sh
       - run: ./scripts/check-npm-package-scopes.sh
   prettier:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
         with:
           node-version: "22"
-      - run: npx prettier@2.3.2 --check ./clients/js/src ./sdk/js/src
+      - run: npx prettier@2.3.2 --check ./sdk/js/src

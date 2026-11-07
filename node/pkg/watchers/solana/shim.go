@@ -31,13 +31,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/certusone/wormhole/node/pkg/common"
 	"github.com/certusone/wormhole/node/pkg/watchers"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
-	"github.com/near/borsh-go"
+	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -116,7 +115,10 @@ func shimParsePostMessage(shimPostMessageDiscriminator []byte, buf []byte) (*Shi
 	}
 
 	data := new(ShimPostMessageData)
-	if err := borsh.Deserialize(data, buf[len(shimPostMessageDiscriminator):]); err != nil {
+	// The on-chain shim program ignores trailing bytes in post message instruction data,
+	// so the watcher must accept them too or it would fail to observe messages the chain
+	// accepted. All other parse sites mirror strict on-chain parsers and use decodeBorsh.
+	if err := decodeBorshAllowTrailing(data, buf[len(shimPostMessageDiscriminator):]); err != nil {
 		return nil, fmt.Errorf("failed to deserialize shim post message: %w", err)
 	}
 
@@ -135,7 +137,7 @@ func shimVerifyCoreMessage(buf []byte) (bool, error) {
 	}
 
 	var data PostMessageData
-	if err := borsh.Deserialize(&data, buf[1:]); err != nil {
+	if err := decodeBorsh(&data, buf[1:]); err != nil {
 		return false, fmt.Errorf("failed to deserialize core instruction data: %w", err)
 	}
 
@@ -153,7 +155,7 @@ func shimParseMessageEvent(shimMessageEventDiscriminator []byte, buf []byte) (*S
 	}
 
 	data := new(ShimMessageEventData)
-	if err := borsh.Deserialize(data, buf[len(shimMessageEventDiscriminator):]); err != nil {
+	if err := decodeBorsh(data, buf[len(shimMessageEventDiscriminator):]); err != nil {
 		return nil, fmt.Errorf("failed to deserialize shim message event: %w", err)
 	}
 
@@ -176,9 +178,8 @@ func (s *SolanaWatcher) shimProcessTopLevelInstruction(
 	alreadyProcessed ShimAlreadyProcessed,
 	isReobservation bool,
 ) (bool, error) {
-	topLevelIdx := uint16(topLevelIndex) // #nosec G115 -- The solana runtime max transaction size is 1232 bytes. So we'd never be able to have this many top level instructions.
-	// #nosec G115 -- The solana runtime max transaction size is 1232 bytes. So we'd never be able to have this many top level instructions.
-	if topLevelIdx >= uint16(len(tx.Message.Instructions)) {
+	topLevelIdx := uint16(topLevelIndex) // #nosec G115 -- The solana runtime can only support 64 top-level instructions per transaction max
+	if int(topLevelIdx) >= len(tx.Message.Instructions) {
 		return false, fmt.Errorf("topLevelIndex %d is greater than the total number of instructions in the tx message, %d", topLevelIdx, len(tx.Message.Instructions))
 	}
 	inst := tx.Message.Instructions[topLevelIdx]
@@ -226,7 +227,7 @@ func (s *SolanaWatcher) shimProcessInnerInstruction(
 	whProgramIndex uint16,
 	shimProgramIndex uint16,
 	tx *solana.Transaction,
-	innerInstructions []solana.CompiledInstruction,
+	innerInstructions []rpc.CompiledInstruction,
 	outerIdx int,
 	startIdx int,
 	alreadyProcessed ShimAlreadyProcessed,
@@ -259,12 +260,14 @@ func (s *SolanaWatcher) shimProcessInnerInstruction(
 // shimProcessRest performs the processing of the inner instructions that is common to both the direct and integrator case. It looks for the PostMessage from
 // the core and the MessageEvent from the shim. Note that the startIdx parameter tells us where to start looking for these events. In the direct case, this
 // will be zero. In the integrator case, it is one after the shim PostMessage event.
+// SECURITY: Shim Program ID with process_post_message, WH core post_message and self CPI event must be the order of calls.
+// Be careful modifying the code handling the index processing; this code is very complicated to reason about.
 func (s *SolanaWatcher) shimProcessRest(
 	logger *zap.Logger,
 	whProgramIndex uint16,
 	shimProgramIndex uint16,
 	tx *solana.Transaction,
-	innerInstructions []solana.CompiledInstruction,
+	innerInstructions []rpc.CompiledInstruction,
 	outerIdx int,
 	startIdx int,
 	postMessage *ShimPostMessageData,
@@ -287,9 +290,9 @@ func (s *SolanaWatcher) shimProcessRest(
 	for idx := startIdx; idx < len(innerInstructions); idx++ {
 		inst := innerInstructions[idx]
 		if inst.ProgramIDIndex == whProgramIndex {
-			foundIt, err := shimVerifyCoreMessage(inst.Data)
-			if err != nil {
-				return fmt.Errorf("failed to verify inner core instruction for shim instruction %d, %d: %w", outerIdx, idx, err)
+			foundIt, verifyErr := shimVerifyCoreMessage(inst.Data)
+			if verifyErr != nil {
+				return fmt.Errorf("failed to verify inner core instruction for shim instruction %d, %d: %w", outerIdx, idx, verifyErr)
 			}
 			if foundIt {
 				if verifiedCoreEvent {
@@ -299,9 +302,14 @@ func (s *SolanaWatcher) shimProcessRest(
 				verifiedCoreEvent = true
 			}
 		} else if inst.ProgramIDIndex == shimProgramIndex {
-			thisEvent, err := shimParseMessageEvent(s.shimMessageEventDiscriminator, inst.Data)
-			if err != nil {
-				return fmt.Errorf("failed to parse inner shim message event instruction for shim instruction %d, %d: %w", outerIdx, idx, err)
+			// SECURITY: Validate the event type and event data.
+			// The EVENT contains two pieces of information: the function discriminator and the event data.
+			// The shim contract makes a self cross program invocation (self CPI) in the context of `post_message`.
+			// The function discriminator is effectively the event type. It's a contract call that can only be made by the
+			// shim contract because of the PDA signer that is required.
+			thisEvent, parseErr := shimParseMessageEvent(s.shimMessageEventDiscriminator, inst.Data)
+			if parseErr != nil {
+				return fmt.Errorf("failed to parse inner shim message event instruction for shim instruction %d, %d: %w", outerIdx, idx, parseErr)
 			}
 
 			if thisEvent != nil {
@@ -353,7 +361,7 @@ func (s *SolanaWatcher) shimProcessRest(
 
 	observation := &common.MessagePublication{
 		TxID:             tx.Signatures[0][:],
-		Timestamp:        time.Unix(int64(messageEvent.Timestamp), 0),
+		Timestamp:        vaa.TimeFromUnixUint32(messageEvent.Timestamp),
 		Nonce:            postMessage.Nonce,
 		Sequence:         messageEvent.Sequence,
 		EmitterChain:     s.chainID,
@@ -385,7 +393,7 @@ func (s *SolanaWatcher) shimProcessRest(
 		)
 	}
 
-	s.msgC <- observation //nolint:channelcheck // The channel to the processor is buffered and shared across chains, if it backs up we should stop processing new observations
+	s.msgC <- observation // Note on channel capacity: The channel to the processor is buffered and shared across chains, if it backs up we should stop processing new observations
 
 	return nil
 }

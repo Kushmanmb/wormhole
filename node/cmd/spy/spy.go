@@ -103,6 +103,7 @@ type filterSignedVaa struct {
 type subscriptionSignedVaa struct {
 	filters []filterSignedVaa
 	ch      chan message
+	done    chan struct{}
 }
 
 func subscriptionId() string {
@@ -110,8 +111,12 @@ func subscriptionId() string {
 }
 
 func (s *spyServer) PublishSignedVAA(vaaBytes []byte) error {
+	// Collect matching subscribers under the lock, then send outside the lock.
+	// This prevents a slow subscriber from blocking the mutex and stalling all
+	// other publishers and subscriber cleanup.
+	var targets []*subscriptionSignedVaa
+
 	s.subsSignedVaaMu.Lock()
-	defer s.subsSignedVaaMu.Unlock()
 
 	var v *vaa.VAA
 	var err error
@@ -123,16 +128,18 @@ func (s *spyServer) PublishSignedVAA(vaaBytes []byte) error {
 				verified = true
 				v, err = s.verifyVAA(v, vaaBytes)
 				if err != nil {
+					s.subsSignedVaaMu.Unlock()
 					return err
 				}
 			}
-			sub.ch <- message{vaaBytes: vaaBytes} //nolint:channelcheck // Don't want to drop incoming VAAs
+			targets = append(targets, sub)
 			continue
 		}
 
 		if v == nil {
 			v, err = vaa.Unmarshal(vaaBytes)
 			if err != nil {
+				s.subsSignedVaaMu.Unlock()
 				return err
 			}
 		}
@@ -143,13 +150,29 @@ func (s *spyServer) PublishSignedVAA(vaaBytes []byte) error {
 					verified = true
 					v, err = s.verifyVAA(v, vaaBytes)
 					if err != nil {
+						s.subsSignedVaaMu.Unlock()
 						return err
 					}
 				}
-				sub.ch <- message{vaaBytes: vaaBytes} //nolint:channelcheck // Don't want to drop incoming VAAs
+				targets = append(targets, sub)
+				// A VAA has a single (EmitterChain, EmitterAddress), so at most one filter can
+				// match. Stop here so a subscription is never collected more than once.
+				break
 			}
 		}
 
+	}
+
+	s.subsSignedVaaMu.Unlock()
+
+	for _, sub := range targets {
+		// The send is intentionally blocking: we don't want to drop incoming VAAs for subscribers.
+		// The subscriber may have been torn down after we collected it above, so also select on done
+		// to avoid blocking.
+		select {
+		case sub.ch <- message{vaaBytes: vaaBytes}: //nolint:channelcheck // Don't want to drop incoming VAAs. So, block on send.
+		case <-sub.done:
+		}
 	}
 
 	return nil
@@ -183,6 +206,13 @@ func (s *spyServer) verifyVAA(v *vaa.VAA, vaaBytes []byte) (*vaa.VAA, error) {
 func (s *spyServer) SubscribeSignedVAA(req *spyv1.SubscribeSignedVAARequest, resp spyv1.SpyRPCService_SubscribeSignedVAAServer) error {
 	var fi []filterSignedVaa
 	if req.Filters != nil {
+		// Deduplicate filters. A VAA has a single (EmitterChain, EmitterAddress), so only identical
+		// filters can match it. Without dedup, duplicate filters would cause the same subscription to
+		// be collected multiple times in PublishSignedVAA and the same VAA to be sent more than once
+		// to the subscription's (buffered, capacity 1) channel. Because that send is intentionally
+		// blocking (we don't drop VAAs), more than one queued send to a torn-down subscriber can block
+		// the single publisher goroutine forever, halting delivery to all subscribers.
+		seen := make(map[filterSignedVaa]struct{}, len(req.Filters))
 		for _, f := range req.Filters {
 			switch t := f.Filter.(type) {
 			case *spyv1.FilterEntry_EmitterFilter:
@@ -193,10 +223,15 @@ func (s *spyServer) SubscribeSignedVAA(req *spyv1.SubscribeSignedVAARequest, res
 				if t.EmitterFilter.GetChainId() > math.MaxUint16 {
 					return status.Error(codes.InvalidArgument, fmt.Sprintf("emitter chain id must be a valid 16 bit unsigned integer: %v", t.EmitterFilter.ChainId.Number()))
 				}
-				fi = append(fi, filterSignedVaa{
+				filter := filterSignedVaa{
 					chainId:     vaa.ChainID(t.EmitterFilter.ChainId), // #nosec G115 -- This is validated above
 					emitterAddr: addr,
-				})
+				}
+				if _, ok := seen[filter]; ok {
+					continue
+				}
+				seen[filter] = struct{}{}
+				fi = append(fi, filter)
 			default:
 				return status.Error(codes.InvalidArgument, "unsupported filter type")
 			}
@@ -207,23 +242,19 @@ func (s *spyServer) SubscribeSignedVAA(req *spyv1.SubscribeSignedVAARequest, res
 	id := subscriptionId()
 	sub := &subscriptionSignedVaa{
 		ch:      make(chan message, 1),
+		done:    make(chan struct{}),
 		filters: fi,
 	}
 	s.subsSignedVaa[id] = sub
 	s.subsSignedVaaMu.Unlock()
 
 	defer func() {
-		for {
-			// The channel sender locks the subscription mutex before sending to the channel.
-			// If the channel is full, then the sender will block and we'll never be able to lock the mutex (resulting in deadlock).
-			// So we empty the channel before trying acquire the lock.
-			_ = DoWithTimeout(func() error { <-sub.ch; return nil }, time.Millisecond)
-			if s.subsSignedVaaMu.TryLock() {
-				delete(s.subsSignedVaa, id)
-				s.subsSignedVaaMu.Unlock()
-				return
-			}
-		}
+		// Signal the publisher first so any in-flight send to this subscription unblocks, then
+		// remove the subscription so no further sends are attempted.
+		close(sub.done)
+		s.subsSignedVaaMu.Lock()
+		delete(s.subsSignedVaa, id)
+		s.subsSignedVaaMu.Unlock()
 	}()
 
 	for {
@@ -231,6 +262,10 @@ func (s *spyServer) SubscribeSignedVAA(req *spyv1.SubscribeSignedVAARequest, res
 		case <-resp.Context().Done():
 			return resp.Context().Err()
 		case msg := <-sub.ch:
+			// DoWithTimeout spawns a goroutine for resp.Send and races it against
+			// sendTimeout. If the timeout wins, the goroutine is not cancelled, but
+			// it will exit on its own once gRPC completes or tears down the stream
+			// (which happens when this handler returns). This is not a permanent leak.
 			if err := DoWithTimeout(func() error {
 				return resp.Send(&spyv1.SubscribeSignedVAAResponse{VaaBytes: msg.vaaBytes})
 			}, *sendTimeout); err != nil {
@@ -252,7 +287,7 @@ func newSpyServer(logger *zap.Logger) *spyServer {
 func DoWithTimeout(f func() error, d time.Duration) error {
 	errChan := make(chan error, 1)
 	go func() {
-		errChan <- f() //nolint:channelcheck // Has timeout below
+		errChan <- f() //nolint:channelcheck // Has timeout below. If f() takes too long, the rest of the code will continue.
 		close(errChan)
 	}()
 	t := time.NewTimer(d)
@@ -300,14 +335,14 @@ func runSpy(cmd *cobra.Command, args []string) {
 		if *p2pNetworkID != "" || *p2pBootstrap != "" {
 			logger.Fatal(`If "--env" is specified, "--network" and "--bootstrap" may not be specified`)
 		}
-		env, err := common.ParseEnvironment(*envStr)
-		if err != nil || (env != common.MainNet && env != common.TestNet) {
+		env, envErr := common.ParseEnvironment(*envStr)
+		if envErr != nil || (env != common.MainNet && env != common.TestNet) {
 			logger.Fatal(`Invalid value for "--env", should be "mainnet" or "testnet"`)
 		}
 		*p2pNetworkID = p2p.GetNetworkId(env)
-		*p2pBootstrap, err = p2p.GetBootstrapPeers(env)
-		if err != nil {
-			logger.Fatal("failed to determine p2p bootstrap peers", zap.String("env", string(env)), zap.Error(err))
+		*p2pBootstrap, envErr = p2p.GetBootstrapPeers(env)
+		if envErr != nil {
+			logger.Fatal("failed to determine p2p bootstrap peers", zap.String("env", string(env)), zap.Error(envErr))
 		}
 	} else {
 		// If they don't specify --env, then --network and --bootstrap are required.
@@ -341,8 +376,12 @@ func runSpy(cmd *cobra.Command, args []string) {
 	}
 
 	// Node's main lifecycle context.
-	rootCtx, rootCtxCancel = context.WithCancel(context.Background())
-	defer rootCtxCancel()
+	// Keep the cancel func in a local var so linters can see
+	// that the WithCancel return value is actually invoked.
+	var cancel context.CancelFunc
+	rootCtx, cancel = context.WithCancel(context.Background())
+	rootCtxCancel = cancel
+	defer cancel()
 
 	// Inbound signed VAAs
 	signedInC := make(chan *gossipv1.SignedVAAWithQuorum, 1024)
@@ -363,8 +402,8 @@ func runSpy(cmd *cobra.Command, args []string) {
 			logger.Fatal(`If "--ethRPC" is specified, "--ethContract" must also be specified`)
 		}
 		s.vaaVerifier = NewVaaVerifier(logger, *ethRPC, *ethContract)
-		if err := s.vaaVerifier.GetInitialGuardianSet(); err != nil {
-			logger.Fatal(`Failed to read initial guardian set for VAA verification`, zap.Error(err))
+		if verifierErr := s.vaaVerifier.GetInitialGuardianSet(); verifierErr != nil {
+			logger.Fatal(`Failed to read initial guardian set for VAA verification`, zap.Error(verifierErr))
 		}
 	}
 
@@ -377,8 +416,8 @@ func runSpy(cmd *cobra.Command, args []string) {
 			case v := <-signedInC:
 				logger.Info("Received signed VAA",
 					zap.Any("vaa", v.Vaa))
-				if err := s.PublishSignedVAA(v.Vaa); err != nil {
-					logger.Error("failed to publish signed VAA", zap.Error(err), zap.Any("vaa", v.Vaa))
+				if pubErr := s.PublishSignedVAA(v.Vaa); pubErr != nil {
+					logger.Error("failed to publish signed VAA", zap.Error(pubErr), zap.Any("vaa", v.Vaa))
 				}
 			}
 		}

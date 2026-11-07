@@ -10,19 +10,22 @@ import (
 	"testing"
 	"time"
 
-	"github.com/certusone/wormhole/node/pkg/common"
-	"github.com/certusone/wormhole/node/pkg/db"
 	"github.com/stretchr/testify/require"
 	"github.com/wormhole-foundation/wormhole/sdk"
 	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 	"go.uber.org/zap"
 
+	"github.com/certusone/wormhole/node/pkg/common"
+	"github.com/certusone/wormhole/node/pkg/db"
+	"github.com/certusone/wormhole/node/pkg/testutils"
+
 	eth_common "github.com/ethereum/go-ethereum/common"
 )
 
 // MockNotaryDB is a mock implementation of the NotaryDB interface.
-// It returns nil for all operations, so it can be used to test the Notary's
-// core logic but certain DB-related operations are not covered.
+// It returns nil for all operations except LoadAll, which returns an empty result like the real
+// database. It can be used to test the Notary's core logic but certain DB-related operations are
+// not covered.
 // Where possible, these should be tested in the Notary database's own unit tests, not here.
 type MockNotaryDB struct{}
 
@@ -32,7 +35,9 @@ func (md MockNotaryDB) DeleteBlackholed(msgID []byte) (*common.MessagePublicatio
 	return nil, nil
 }
 func (md MockNotaryDB) DeleteDelayed(msgID []byte) (*common.PendingMessage, error) { return nil, nil }
-func (md MockNotaryDB) LoadAll(l *zap.Logger) (*db.NotaryLoadResult, error)        { return nil, nil }
+func (md MockNotaryDB) LoadAll(l *zap.Logger) (*db.NotaryLoadResult, error) {
+	return &db.NotaryLoadResult{}, nil
+}
 
 func makeTestNotary(t *testing.T) *Notary {
 	t.Helper()
@@ -46,6 +51,54 @@ func makeTestNotary(t *testing.T) *Notary {
 		blackholed: NewSet(),
 		env:        common.GoTest,
 	}
+}
+
+func TestNotary_NilInputsAndDependencies(t *testing.T) {
+	logger := zap.NewNop()
+
+	notary, err := NewNotary(context.Background(), logger, nil, common.GoTest)
+	require.Error(t, err)
+	require.Nil(t, notary)
+
+	guardianDB := db.OpenDb(logger, nil)
+	t.Cleanup(func() { _ = guardianDB.Close() })
+
+	notary, err = NewNotary(context.Background(), nil, guardianDB, common.GoTest)
+	require.Error(t, err)
+	require.Nil(t, notary)
+
+	notary, err = NewNotary(context.Background(), logger, guardianDB, common.GoTest)
+	require.NoError(t, err)
+	require.NotNil(t, notary)
+
+	verdict, err := notary.ProcessMsg(nil)
+	require.Error(t, err)
+	require.Equal(t, Unknown, verdict)
+	require.False(t, notary.IsDelayed(nil))
+}
+
+// TestNewNotary_LoadsPersistedState checks that NewNotary returns a Notary that already holds the
+// messages stored in the database, without a call to Run.
+func TestNewNotary_LoadsPersistedState(t *testing.T) {
+	logger := zap.NewNop()
+	guardianDB := db.OpenDb(logger, nil)
+	t.Cleanup(func() { _ = guardianDB.Close() })
+
+	delayedMsg := makeUniqueMessagePublication(t)
+	blackholedMsg := makeUniqueMessagePublication(t)
+
+	notaryDB := db.NewNotaryDB(guardianDB.Conn())
+	require.NoError(t, notaryDB.StoreDelayed(&common.PendingMessage{
+		ReleaseTime: time.Unix(time.Now().Add(time.Hour).Unix(), 0),
+		Msg:         *delayedMsg,
+	}))
+	require.NoError(t, notaryDB.StoreBlackholed(blackholedMsg))
+
+	n, err := NewNotary(context.Background(), logger, guardianDB, common.GoTest)
+	require.NoError(t, err)
+
+	require.True(t, n.IsDelayed(delayedMsg))
+	require.True(t, n.IsBlackholed(blackholedMsg.MessageID()))
 }
 
 // TestNotary_AlwaysApproveNonTransferVerifierEmitters tests that all messages are approve if the emitter chain does not have a transfer verifier.
@@ -557,7 +610,7 @@ func makeUniqueMessagePublication(t *testing.T) *common.MessagePublication {
 	var sequence = rand.Uint64()
 	msgpub := &common.MessagePublication{
 		TxID:             eth_common.HexToHash("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063").Bytes(),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         sequence,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -570,4 +623,54 @@ func makeUniqueMessagePublication(t *testing.T) *common.MessagePublication {
 	}
 
 	return msgpub
+}
+
+// TestNotary_ReobservationDoesNotBypassDelay verifies that once a message is delayed, a
+// reobservation of that message cannot release it early or duplicate its entry in the delayed
+// queue. Reobservation re-runs the transfer verifier from scratch, so the same message can
+// re-enter ProcessMsg carrying a different verification state.
+func TestNotary_ReobservationDoesNotBypassDelay(t *testing.T) {
+	// Verification states that a reobserved message might carry on re-entry.
+	tests := map[string]common.VerificationState{
+		"reobserved as Valid":       common.Valid,
+		"reobserved as Rejected":    common.Rejected,
+		"reobserved as Anomalous":   common.Anomalous,
+		"reobserved as NotVerified": common.NotVerified,
+	}
+
+	for name, reobservedState := range tests {
+		t.Run(name, func(t *testing.T) {
+			n := makeTestNotary(t)
+
+			msg := makeUniqueMessagePublication(t)
+			require.NoError(t, msg.SetVerificationState(common.CouldNotVerify))
+
+			verdict, err := n.ProcessMsg(msg)
+			require.NoError(t, err)
+			require.Equal(t, Delay, verdict)
+			require.True(t, n.IsDelayed(msg))
+			require.Equal(t, 1, n.delayed.Len())
+
+			releaseTime := n.delayed.Peek().ReleaseTime
+
+			// Reobservation republishes the message with the same message ID and has the transfer
+			// verifier evaluate it again from the default state.
+			reobserved := makeUniqueMessagePublication(t)
+			reobserved.Sequence = msg.Sequence
+			reobserved.IsReobservation = true
+			if reobservedState != common.NotVerified {
+				// SetVerificationState refuses to set the state it already holds.
+				require.NoError(t, reobserved.SetVerificationState(reobservedState))
+			}
+			require.Equal(t, msg.MessageIDString(), reobserved.MessageIDString())
+
+			verdict, err = n.ProcessMsg(reobserved)
+			require.NoError(t, err)
+			require.Equal(t, Delay, verdict, "reobservation must not release a delayed message early")
+
+			// The original delayed entry is untouched, so delay() was not called a second time.
+			require.Equal(t, 1, n.delayed.Len())
+			require.Equal(t, releaseTime, n.delayed.Peek().ReleaseTime)
+		})
+	}
 }

@@ -107,23 +107,13 @@ since only very few nodes support the light client protocol.
 Running a full node typically requires ~500G of SSD storage, 8G of RAM and 4-8 CPU threads (depending on clock
 frequency). Light clients have much lower hardware requirements.
 
-### Terra
-
-Terra is also sometimes referred to as Terra 2, but the correct name is just simply "Terra". The previous version was renamed to "Terra Classic".
-
-Refer to the [Terra documentation](https://docs.terra.money/full-node/run-a-full-terra-node/set-up-production/) on how to run a full node.
-
-#### Terra Classic
-
-Refer to the [Terra Classic documentation](https://classic-docs.terra.money/docs/full-node/run-a-full-terra-node/README.html) on how to run a full node.
-
 ### Wormchain
 
 All guardians **must run validators for wormchain**, the codename of [Wormhole Gateway](https://wormhole.com/gateway/).
 
 #### Pre-requisites
 
-- Ensure you have [Go](https://golang.org/dl/) >= 1.23.3 installed.
+- Ensure you have [Go](https://golang.org/dl/) >= 1.26.10 installed.
 
 #### Building wormchaind binary
 
@@ -212,7 +202,7 @@ To generate wormchain keys, run the following command:
 This command will create a `<key-name>.info` file. To extract the key, run the following command:
 
 ```bash
-wormchaind keys export <key_name> --home /path/to/wormchain/directory --keyring-dir . --keyring-backend file
+wormchaind keys export <key-name> --home /path/to/wormchain/directory --keyring-dir . --keyring-backend file
 ```
 
 This command will ask for a passphrase to be created for it. Both `wormchain.key` and `passphrase` will be used by the following `guardiand` flags:
@@ -220,8 +210,119 @@ This command will ask for a passphrase to be created for it. Both `wormchain.key
 - `--accountantKeyPath`
 - `--accountantKeyPassPhrase`
 
-**Note**
-These steps could be executed directly on the `guardiand` node, having previously built the `wormchaind` binary.
+Feel free to run these directly on the `guardiand` node, having previously built the `wormchaind` binary.
+
+**NOTE**: Share the wormchain public key for your validator with the Wormhole Foundation. It should be in the format: `wormhole1xxx`.
+
+#### Allowlist your new validator
+
+Work with the Wormhole Foundation to have another guardian add your new wormchain validator to the allowlist.
+
+For transparency, the guardian adding your key to the allowlist would run a command like this (`<allowlisting-guardian-key-name>` is from the `.info` file created previously):
+
+```bash
+wormchaind tx wormhole create-allowed-address "<new-validator-address>" "<new-validator-name>" \
+	--home /path/to/wormchain/directory \
+	--from <allowlisting-guardian-key-name> \
+	--keyring-backend file \
+	--chain-id wormchain \
+	--broadcast-mode block \
+	--node tcp://127.0.0.1:26657
+```
+
+They will also need to send you at least 1 `utest` token which is the native gas token for wormchain (and has no inherent value). This is an example command they run to do this for you:
+
+```bash
+wormchaind tx bank send <sender-address> <new-validator-address> 1utest \
+	--home /path/to/wormchain/directory \
+	--from <key-name> \
+	--keyring-backend file \
+	--chain-id wormchain \
+	--broadcast-mode block \
+	--node tcp://127.0.0.1:26657
+```
+
+#### Sync from a snapshot
+
+The easiest way to sync your wormchain node is via a snapshot. Follow [these instructions](../wormchain/syncing.md#sync-from-snapshot) to sync from a snapshot.
+
+**NOTE**: past tx might be held up in the governor if you sync wormchain while running an active guardian. Disable the governor feature before syncing in existing guardians. In general, this should only *ever* happen for initial new guardian setup prior to entering the active set via the vote to update the guardian set.
+
+#### Create your validator via a transaction
+
+The final step before the governance VAA to add your new validator into the guardian set is the `create-validator` wormchain command. Use `<key-name>` from when the `.info` file was created above and run this command:
+
+<!-- cspell:disable -->
+
+```bash
+wormchaind tx staking create-validator \
+  --amount=1000000uworm \
+  --pubkey=$(wormchaind tendermint show-validator --home /path/to/wormchain) \
+  --moniker="<your-validator-name>" \
+  --chain-id=wormchain \
+  --commission-rate="0.00" \
+  --commission-max-rate="0.20" \
+  --commission-max-change-rate="0.02" \
+  --min-self-delegation="1" \
+  --from=<key-name> \
+  --keyring-backend=file \
+  --home=/path/to/wormchain \
+  --node=<wormchain-rpc-endpoint>
+```
+
+The native wormchain gas token is `utest` and it is denominated in `uworm`, much like ETH vs gwei. Since wormchain is a permissioned blockchain, these tokens have no inherent value and are solely for submitting transactions.
+
+<!-- cspell:enable -->
+
+After this, all that remains to add your node to the active set is a governance VAA that the existing guardian set must vote on.
+
+##### Creating your validator via an offline transaction
+
+Get the `key` for the `--pubkey` flag from `consensus_pubkey` via `wormchaind q staking validators`.
+
+Generate the offline transaction to sign:
+
+<!-- cspell:disable -->
+
+```bash
+wormchaind tx staking create-validator \
+  --from <key-name> \
+  --amount 0uworm \
+  --min-self-delegation 0 \
+  --pubkey '{"@type":"/cosmos.crypto.ed25519.PubKey","key":"<your-consensus-pubkey>"}' \
+  --moniker "<your-validator-name>" \
+  --commission-rate 0.0 \
+  --commission-max-rate 0.2 \
+  --commission-max-change-rate 0.01 \
+  --chain-id wormchain \
+  --home /path/to/wormchain \
+  --generate-only > tx.json
+```
+
+<!-- cspell:enable -->
+
+Sign the offline transaction:
+
+```bash
+wormchaind tx sign tx.json \
+  --from <key-name> \
+  --offline \
+  --account-number 0 \
+  --sequence 0 \
+  --chain-id wormchain \
+  --keyring-backend file \
+  --home /path/to/wormchain > tx-signed.json
+```
+
+Broadcast the signed transaction out to the network:
+
+```bash
+wormchaind tx broadcast tx-signed.json \
+  --node tcp://localhost:26657 \
+  -o json
+```
+
+Once the governance VAA vote passes, your guardian and wormchain will be added into the active set.
 
 #### Wormchain Useful Commands
 
@@ -305,8 +406,6 @@ All modern Cosmos integrations happen by Wormhole observing IBC transactions on 
 The following Cosmos based nodes were added prior to Gateway and guardians need to run full nodes:
 
 - Injective
-- Terra
-- Terra Classic
 - XPLA
 
 **NOTE**: All guardians must run validators for wormchain.
@@ -316,7 +415,7 @@ The following Cosmos based nodes were added prior to Gateway and guardians need 
 For security reasons, we do not provide a pre-built binary. You need to check out the repo and build the
 guardiand binary from source. A Git repo is much harder to tamper with than release binaries.
 
-To build the Wormhole node, you need [Go](https://golang.org/dl/) >= 1.23.3
+To build the Wormhole node, you need [Go](https://golang.org/dl/) >= 1.26.10
 
 First, check out the version of the Wormhole repo that you want to deploy:
 
@@ -493,7 +592,89 @@ Please remember to allowlist the new NTT Accountant key for use with Wormchain! 
 
 <!-- cspell:enable -->
 
+This feature shows up in the guardian heartbeats as `ccq`.
+
 To test query functionality, follow the instructions in [node/hack/query/ccqlistener/ccqlistener.go](../node/hack/query/ccqlistener/ccqlistener.go).
+
+## Enabling the Solana shim
+
+CLI flags for the guardian:
+
+<!-- cspell:disable -->
+
+```shell
+--solanaShimContract=[solana shim address]
+```
+
+<!-- cspell:enable -->
+
+This feature shows up in the guardian heartbeats as `solshim`
+
+## Enabling the Fogo shim
+
+CLI flags for the guardian:
+
+<!-- cspell:disable -->
+
+```shell
+--fogoShimContract=[fogo shim address]
+```
+
+<!-- cspell:enable -->
+
+This feature shows up in the guardian heartbeats as `fogoshim`
+
+## Enabling the delegated guardian set
+
+Get the delegated guardians contract address from the [wormhole contract addresses reference](https://wormhole.com/docs/products/reference/contract-addresses/#delegated-guardians)
+
+CLI flags for the guardian:
+
+<!-- cspell:disable -->
+
+```shell
+--ethDelegatedGuardiansContract=[delegated guardians address]
+```
+
+<!-- cspell:enable -->
+
+This feature shows up in the guardian heartbeats as `dgset`.
+
+## Enabling the global accountant
+
+This enables the global accountant for WTT and NTT transfers:
+
+<!-- cspell:disable -->
+
+```shell
+--wormchainURL
+--accountantWS
+--accountantCheckEnabled
+--accountantNttContract
+--accountantNttKeyPath
+--accountantNttKeyPassPhrase
+# Without this, it is in log only mode exclusively
+--accountantCheckEnabled
+```
+
+<!-- cspell:enable -->
+
+This feature shows up in the guardian heartbeats as `acct:ntt-acct` in enforcing mode when NTT is enabled. It shows up as `acct-logonly:ntt-acct` without `accountantCheckEnabled`. It will just show up as `acct` if NTT is not enabled.
+
+## Enabling IBC
+
+This enables watching cosmos chains connected to wormchain via IBC without running the nodes themselves. To enable, pass these flags pointing to your wormchain node:
+
+<!-- cspell:disable -->
+
+```shell
+--ibcWS=ws://<your_wormchain_validator>:26657/websocket
+--ibcLCD=http://<your_wormchain_validator>:1317
+--ibcContract=<ibc contract>
+```
+<!-- cspell:enable -->
+
+This feature shows up in the guardian heartbeats as `ibc`. The example ports are just the defaults and may change based on your wormchain configuration.
 
 ## Running a public API endpoint
 
@@ -524,14 +705,23 @@ can be operated behind a load balancer.
 
 ## Enabling Telemetry
 
-Optionally, the guardian can send telemetry to [Grafana Cloud Logs](https://grafana.com/products/cloud/logs/) aka "loki".
-To enable this functionality, add the following flag:
+On mainnet and testnet, the guardian sends its logs to [Grafana Cloud Logs](https://grafana.com/products/cloud/logs/) aka "loki"
+and its Prometheus metrics to Grafana Cloud unless telemetry is disabled with `--disableTelemetry`.
+Add the following flags:
 
 ```bash
 --telemetryLokiURL=$PER_GUARDIAN_LOKI_URL_WITH_TOKEN
+--promRemoteURL=$PER_GUARDIAN_PROMETHEUS_URL_WITH_TOKEN
 ```
 
-New guardians should talk to the Wormhole Foundation to get a Loki url.
+Metrics are pushed every 15 seconds by default. Use `--promRemoteInterval` (for example `--promRemoteInterval=1m`) to
+push less often; the minimum is 15 seconds.
+
+A missing `--telemetryLokiURL` stops the node at startup. A missing `--promRemoteURL` currently only logs a warning;
+a future release will require it as well. In that release `--disableTelemetry` will disable both logs and metrics.
+Until then, `--disableTelemetry` disables only logs.
+
+New guardians should talk to the Wormhole Foundation to get these URLs.
 
 ### Binding to privileged ports
 

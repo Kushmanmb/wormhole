@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdmath "math"
 	"math/big"
 	"reflect"
 	"testing"
@@ -290,7 +291,7 @@ func TestVerifySignatures(t *testing.T) {
 	addrs = append(addrs, crypto.PubkeyToAddress(privKey2.PublicKey))
 	addrs = append(addrs, crypto.PubkeyToAddress(privKey3.PublicKey))
 
-	type test struct {
+	type testCase struct {
 		label      string
 		keyOrder   []*ecdsa.PrivateKey
 		addrs      []common.Address
@@ -298,7 +299,7 @@ func TestVerifySignatures(t *testing.T) {
 		result     bool
 	}
 
-	tests := []test{
+	tests := []testCase{
 		{
 			label:      "NoSignerZero",
 			keyOrder:   []*ecdsa.PrivateKey{},
@@ -543,8 +544,8 @@ func TestVerifySignaturesFuzz(t *testing.T) {
 					}
 				}
 
-				test := test{label: "A", keyOrder: keyPair, addrs: addrs, indexOrder: indexPair, result: result}
-				tests = append(tests, test)
+				tc := test{label: "A", keyOrder: keyPair, addrs: addrs, indexOrder: indexPair, result: result}
+				tests = append(tests, tc)
 			}
 		}
 	}
@@ -730,14 +731,14 @@ func TestDecodeTransferPayloadHdr(t *testing.T) {
 				assert.NotNil(t, vaa)
 
 				if len(tc.errString) == 0 {
-					expectedEmitterAddr, err := StringToAddress(tc.emitterAddr)
-					assert.NoError(t, err)
+					expectedEmitterAddr, addrErr := StringToAddress(tc.emitterAddr)
+					assert.NoError(t, addrErr)
 
-					expectedOriginAddress, err := StringToAddress(tc.originAddress)
-					assert.NoError(t, err)
+					expectedOriginAddress, originAddrErr := StringToAddress(tc.originAddress)
+					assert.NoError(t, originAddrErr)
 
-					expectedTargetAddress, err := StringToAddress(tc.targetAddress)
-					assert.NoError(t, err)
+					expectedTargetAddress, targetAddrErr := StringToAddress(tc.targetAddress)
+					assert.NoError(t, targetAddrErr)
 
 					expectedAmount := big.NewInt(tc.amount)
 
@@ -745,8 +746,8 @@ func TestDecodeTransferPayloadHdr(t *testing.T) {
 					assert.Equal(t, expectedEmitterAddr, vaa.EmitterAddress)
 					assert.Equal(t, 133, len(vaa.Payload))
 
-					payload, err := DecodeTransferPayloadHdr(vaa.Payload)
-					assert.NoError(t, err)
+					payload, payloadErr := DecodeTransferPayloadHdr(vaa.Payload)
+					assert.NoError(t, payloadErr)
 					assert.Equal(t, tc.payloadType, payload.Type)
 					assert.Equal(t, tc.originChain, payload.OriginChain)
 					assert.Equal(t, expectedOriginAddress, payload.OriginAddress)
@@ -980,6 +981,123 @@ func TestChainIDFromNumber(t *testing.T) {
 				require.Error(t, err)
 				require.Equal(t, ChainIDUnset, got)
 			}
+		})
+	}
+}
+
+func TestTimeFromUnix(t *testing.T) {
+	type testCase[N number] struct {
+		name    string
+		input   N
+		want    time.Time
+		wantErr bool
+		errMsg  string
+	}
+	// Use int64 to represent all error conditions (overflow, negative).
+	tests := []testCase[int64]{
+		{
+			name:  "normal on-chain timestamp",
+			input: int64(1715790225),
+			want:  time.Date(2024, time.May, 15, 16, 23, 45, 0, time.UTC),
+		},
+		{
+			name:    "valid",
+			input:   int64(1),
+			wantErr: false,
+		},
+		{
+			name:  "zero timestamp",
+			input: int64(0),
+			want:  time.Unix(0, 0).UTC(),
+		},
+		{
+			name:  "uint32 max timestamp",
+			input: int64(stdmath.MaxUint32),
+			want:  time.Unix(int64(stdmath.MaxUint32), 0).UTC(),
+		},
+		{
+			name:    "just over uint32 max timestamp",
+			input:   int64(stdmath.MaxUint32) + 1,
+			wantErr: true,
+			errMsg:  "timestamp must be less than or equal to",
+		},
+		{
+			name:    "negative timestamp",
+			input:   int64(-1),
+			wantErr: true,
+			errMsg:  "timestamp cannot be negative",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := TimeFromUnix(tt.input)
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errMsg != "" {
+					require.ErrorContains(t, err, tt.errMsg)
+				}
+				require.True(t, got.IsZero())
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tt.input, got.Unix())
+			if !tt.want.IsZero() {
+				require.Equal(t, tt.want, got.UTC())
+			}
+		})
+	}
+}
+
+func TestTimeFromUnixUint32(t *testing.T) {
+	tests := []struct {
+		name  string
+		input uint32
+		want  time.Time
+	}{
+		{
+			name:  "normal on-chain timestamp",
+			input: uint32(1715790225),
+			want:  time.Date(2024, time.May, 15, 16, 23, 45, 0, time.UTC),
+		},
+		{
+			name:  "zero timestamp",
+			input: 0,
+			want:  time.Unix(0, 0).UTC(),
+		},
+		{
+			name:  "uint32 max timestamp",
+			input: stdmath.MaxUint32,
+			want:  time.Unix(int64(stdmath.MaxUint32), 0).UTC(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TimeFromUnixUint32(tt.input)
+			require.Equal(t, int64(tt.input), got.Unix())
+			require.Equal(t, tt.want, got.UTC())
+		})
+	}
+}
+
+// TestTimeFromUnixEquivalence checks that TimeFromUnixUint32 matches the generic
+// TimeFromUnix for uint32 inputs. Because every uint32 is in range, TimeFromUnix
+// never errors here, and both must return the same time.Time.
+func TestTimeFromUnixEquivalence(t *testing.T) {
+	inputs := []uint32{
+		0,
+		1,
+		1715790225,
+		stdmath.MaxUint32 - 1,
+		stdmath.MaxUint32,
+	}
+
+	for _, input := range inputs {
+		t.Run(fmt.Sprint(input), func(t *testing.T) {
+			generic, err := TimeFromUnix(input)
+			require.NoError(t, err)
+			require.Equal(t, generic, TimeFromUnixUint32(input))
 		})
 	}
 }

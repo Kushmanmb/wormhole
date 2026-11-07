@@ -1,10 +1,6 @@
 import { parseTokenBridgeRegisterChainVaa } from "@certusone/wormhole-sdk/lib/esm/vaa/tokenBridge";
-import {
-  JsonRpcProvider,
-  TransactionBlock,
-  getObjectFields,
-  getTransactionDigest,
-} from "@mysten/sui.js";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { Transaction } from "@mysten/sui/transactions";
 import dotenv from "dotenv";
 import fs from "fs";
 import yargs from "yargs";
@@ -21,6 +17,7 @@ import {
   registerChain,
   setMaxGasBudgetDevnet,
 } from "../../chains/sui";
+import { getObjectFields } from "../../sdk/sui";
 import {
   GOVERNANCE_CHAIN,
   GOVERNANCE_EMITTER,
@@ -31,7 +28,7 @@ import {
 import { YargsAddCommandsFn } from "../Yargs";
 import { deploy } from "./deploy";
 import { initExampleApp, initTokenBridge, initWormhole } from "./init";
-import { Chain, chainIdToChain, toChainId } from "@wormhole-foundation/sdk";
+import { CliChain, cliChainIdToChain } from "../../utils";
 
 export const addSetupCommands: YargsAddCommandsFn = (y: typeof yargs) =>
   y.command(
@@ -136,8 +133,8 @@ export const addSetupCommands: YargsAddCommandsFn = (y: typeof yargs) =>
         rpc,
         privateKey
       );
-      logTransactionDigest(tokenBridgeDeployRes);
-      logPublishedPackageId(tokenBridgeDeployRes);
+      logTransactionDigest(exampleAppDeployRes);
+      logPublishedPackageId(exampleAppDeployRes);
 
       // Init example app
       console.log("\n[+2/3] Initializing example app...");
@@ -195,16 +192,16 @@ export const addSetupCommands: YargsAddCommandsFn = (y: typeof yargs) =>
 
       dotenv.config({ path: envPath });
 
-      const tx = new TransactionBlock();
+      const tx = new Transaction();
       setMaxGasBudgetDevnet("Devnet", tx);
-      const registrations: { chain: Chain; module: string }[] = [];
+      const registrations: { chain: CliChain; module: string }[] = [];
       for (const key in process.env) {
         if (/^REGISTER_(.+)_TOKEN_BRIDGE_VAA$/.test(key)) {
           // Get VAA info
           const vaa = Buffer.from(String(process.env[key]), "hex");
           const { foreignChain, module } =
             parseTokenBridgeRegisterChainVaa(vaa);
-          const chain = chainIdToChain(toChainId(foreignChain));
+          const chain = cliChainIdToChain(foreignChain);
           registrations.push({ chain, module });
 
           // Register
@@ -228,7 +225,7 @@ export const addSetupCommands: YargsAddCommandsFn = (y: typeof yargs) =>
         console.log(`  ${registration.chain} ${registration.module}... done`);
       }
 
-      console.log("Transaction digest:", getTransactionDigest(registerRes));
+      console.log("Transaction digest:", registerRes.digest);
 
       // Done!
       console.log("\nDone!");
@@ -236,14 +233,15 @@ export const addSetupCommands: YargsAddCommandsFn = (y: typeof yargs) =>
   );
 
 const getEmitterCapObjectId = async (
-  provider: JsonRpcProvider,
+  client: SuiGrpcClient,
   tokenBridgeStateObjectId: string
-): Promise<string> =>
-  getObjectFields(
-    await provider.getObject({
-      id: tokenBridgeStateObjectId,
-      options: {
-        showContent: true,
-      },
-    })
-  )?.emitter_cap.fields.id.id;
+): Promise<string> => {
+  const fields = await getObjectFields(client, tokenBridgeStateObjectId);
+  const emitterCapObjectId = fields?.emitter_cap?.id;
+  if (typeof emitterCapObjectId !== "string") {
+    throw new Error(
+      `Couldn't find emitter cap ID on token bridge state ${tokenBridgeStateObjectId}`
+    );
+  }
+  return emitterCapObjectId;
+};

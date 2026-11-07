@@ -27,12 +27,17 @@ pub use api::{
     complete_wrapped,
     complete_wrapped_with_payload,
     create_wrapped,
+    freeze,
     initialize,
+    pause,
     register_chain,
+    set_pauser_addresses,
     transfer_native,
     transfer_native_with_payload,
     transfer_wrapped,
     transfer_wrapped_with_payload,
+    unpause,
+    unpause_expired,
     upgrade_contract,
     AttestToken,
     AttestTokenData,
@@ -46,10 +51,16 @@ pub use api::{
     CompleteWrappedWithPayloadData,
     CreateWrapped,
     CreateWrappedData,
+    Freeze,
+    FreezeData,
     Initialize,
     InitializeData,
+    Pause,
+    PauseData,
     RegisterChain,
     RegisterChainData,
+    SetPauserAddresses,
+    SetPauserAddressesData,
     TransferNative,
     TransferNativeData,
     TransferNativeWithPayload,
@@ -58,6 +69,10 @@ pub use api::{
     TransferWrappedData,
     TransferWrappedWithPayload,
     TransferWrappedWithPayloadData,
+    Unpause,
+    UnpauseData,
+    UnpauseExpired,
+    UnpauseExpiredData,
     UpgradeContract,
     UpgradeContractData,
 };
@@ -92,6 +107,28 @@ pub enum TokenBridgeError {
     NonexistentTokenMetadataAccount,
     NotMetadataV1Account,
     WrongMetadataAccount,
+    /// `paused == true`. Lifted only by a successful `unpause` / `unpause_expired` call.
+    Paused,
+    /// Caller of `pause` / `unpause` is not the configured pauser / unpauser.
+    InvalidPauser,
+    /// Configured pauser / unpauser is the zero pubkey, so that side of the pair is disabled.
+    PauserNotConfigured,
+    /// `self_program` account passed by the caller does not match this program's `program_id`.
+    /// Only used to defensively guard the self-CPI that emits Anchor-style events.
+    InvalidSelfProgram,
+    // NOTE: new variants are APPENDED below — `From<TokenBridgeError>` maps each variant to its
+    // numeric position (`t as u64`), so inserting in the middle would renumber existing error
+    // codes. Always append.
+    /// Caller of `freeze` is not the configured freezer (or the freezer role is unassigned).
+    InvalidFreezer,
+    /// `unpause` / `unpause_expired` was called while the bridge is not paused.
+    NotPaused,
+    /// `unpause_expired` was called before the current pause has expired (`now < pause_expiry`).
+    NotExpired,
+    /// `pause` would not push `pause_expiry` strictly forward — the bridge already has an
+    /// equal-or-later expiry (e.g. it is frozen, or a same-slot re-pause). A pauser must not be
+    /// able to reduce a `freeze`, and a no-op call reverts rather than emitting a misleading event.
+    PauseNotExtended,
 }
 
 impl From<TokenBridgeError> for SolitaireError {
@@ -101,6 +138,7 @@ impl From<TokenBridgeError> for SolitaireError {
 }
 
 solitaire! {
+    @event_cpi,
     Initialize => initialize,
     AttestToken => attest_token,
     CompleteNative => complete_native,
@@ -114,4 +152,9 @@ solitaire! {
     CompleteWrappedWithPayload => complete_wrapped_with_payload,
     TransferWrappedWithPayload => transfer_wrapped_with_payload,
     TransferNativeWithPayload => transfer_native_with_payload,
+    SetPauserAddresses => set_pauser_addresses,
+    Pause => pause,
+    Unpause => unpause,
+    Freeze => freeze,
+    UnpauseExpired => unpause_expired,
 }

@@ -234,8 +234,8 @@ func (e *Watcher) runTxProcessor(ctx context.Context) error {
 			return ctx.Err()
 
 		case job := <-e.transactionProcessingQueue:
-			err := e.processTx(logger, ctx, job)
-			if err != nil {
+			processErr := e.processTx(logger, ctx, job)
+			if processErr != nil {
 				// transaction processing unsuccessful. Retry if retry_counter not exceeded.
 				if job.retryCounter < txProcRetry {
 					// Log and retry with exponential backoff
@@ -243,14 +243,14 @@ func (e *Watcher) runTxProcessor(ctx context.Context) error {
 						"near.processTx",
 						zap.String("log_msg_type", "tx_processing_retry"),
 						zap.String("tx_hash", job.txHash),
-						zap.String("error", err.Error()),
+						zap.String("error", processErr.Error()),
 					)
 					job.retryCounter++
 					job.delay *= 2
-					err := e.schedule(ctx, job, job.delay)
-					if err != nil {
+					schedErr := e.schedule(ctx, job, job.delay)
+					if schedErr != nil {
 						// Debug-level logging here because it could be very noisy (one log entry for *any* transaction on the NEAR blockchain)
-						logger.Debug("error scheduling transaction processing job", zap.Error(err))
+						logger.Debug("error scheduling transaction processing job", zap.Error(schedErr))
 					}
 				} else {
 					// Warn and do not retry
@@ -258,7 +258,7 @@ func (e *Watcher) runTxProcessor(ctx context.Context) error {
 						"near.processTx",
 						zap.String("log_msg_type", "tx_processing_retries_exceeded"),
 						zap.String("tx_hash", job.txHash),
-						zap.String("error", err.Error()),
+						zap.String("error", processErr.Error()),
 					)
 					p2p.DefaultRegistry.AddErrorCount(vaa.ChainIDNear, 1)
 				}
@@ -266,7 +266,7 @@ func (e *Watcher) runTxProcessor(ctx context.Context) error {
 
 			if job.hasWormholeMsg {
 				// report how long it took to process this transaction
-				e.eventChanTxProcessedDuration <- time.Since(job.creationTime) //nolint:channelcheck // Only pauses this watcher
+				common.WriteToChannelWithoutBlocking(e.eventChanTxProcessedDuration, time.Since(job.creationTime), "near_event_chan_tx_processed_duration") // Non-blocking: eventChanTxProcessedDuration is buffered (cap 10) and metrics-only, so dropping a sample is preferable to stalling the watcher.
 			}
 		}
 
@@ -346,7 +346,7 @@ func (e *Watcher) schedule(ctx context.Context, job *transactionProcessingJob, d
 				select {
 				case <-ctx.Done():
 					return nil
-				case e.transactionProcessingQueue <- job: //nolint:channelcheck // Only blocking this go routine.
+				case e.transactionProcessingQueue <- job: //nolint:channelcheck // Buffered channel and we drop the message if over the queue size above.
 				}
 			}
 			return nil

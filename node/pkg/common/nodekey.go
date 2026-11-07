@@ -10,21 +10,23 @@ import (
 )
 
 func GetOrCreateNodeKey(logger *zap.Logger, path string) (crypto.PrivKey, error) {
+	// #nosec G703 -- Path comes from operator configuration, not user input
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			logger.Info("No node key found, generating a new one...", zap.String("path", path))
 
-			priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
-			if err != nil {
-				panic(err)
+			priv, _, genErr := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+			if genErr != nil {
+				panic(genErr)
 			}
 
-			s, err := crypto.MarshalPrivateKey(priv)
-			if err != nil {
-				panic(err)
+			s, marshalErr := crypto.MarshalPrivateKey(priv)
+			if marshalErr != nil {
+				panic(marshalErr)
 			}
 
+			// #nosec G703 -- Path comes from operator configuration, not user input
 			err = os.WriteFile(path, s, 0600)
 			if err != nil {
 				return nil, fmt.Errorf("failed to write node key: %w", err)

@@ -135,6 +135,7 @@ module token_bridge::transfer_tokens {
     ): MessageTicket {
         // This capability ensures that the current build version is used.
         let latest_only = state::assert_latest_only(token_bridge_state);
+        state::assert_not_paused(token_bridge_state);
 
         let (
             nonce,
@@ -870,7 +871,7 @@ module token_bridge::transfer_token_tests {
                 scenario,
                 sender
             );
-        sui::test_utils::destroy(treasury_cap);
+        std::unit_test::destroy(treasury_cap);
 
         // NOTE: This test purposely doesn't `attest` COIN_WRAPPED_7.
         let transfer_amount = 42069;

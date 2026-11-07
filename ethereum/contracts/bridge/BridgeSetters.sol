@@ -4,8 +4,12 @@
 pragma solidity ^0.8.0;
 
 import "./BridgeState.sol";
+import "./BridgePauserStorage.sol";
 
 contract BridgeSetters is BridgeState {
+    error InvalidImplementationAddress();
+    error InvalidEvmChainId();
+
     function setInitialized(address implementatiom) internal {
         _state.initializedImplementations[implementatiom] = true;
     }
@@ -36,12 +40,11 @@ contract BridgeSetters is BridgeState {
     }
 
     function setTokenImplementation(address impl) internal {
-        require(impl != address(0), "invalid implementation address");
+        if (impl == address(0)) revert InvalidImplementationAddress();
         _state.tokenImplementation = impl;
     }
 
     function setWETH(address weth) internal {
-        require(weth != address(0), "invalid WETH address");
         _state.provider.WETH = weth;
     }
 
@@ -64,7 +67,27 @@ contract BridgeSetters is BridgeState {
     }
 
     function setEvmChainId(uint256 evmChainId) internal {
-        require(evmChainId == block.chainid, "invalid evmChainId");
+        if (evmChainId != block.chainid) revert InvalidEvmChainId();
         _state.evmChainId = evmChainId;
+    }
+
+    function setPauser(address pauser) internal {
+        BridgePauserStorage.data().pauser = pauser;
+    }
+
+    function setFreezer(address freezer) internal {
+        BridgePauserStorage.data().freezer = freezer;
+    }
+
+    function setUnpauser(address unpauser) internal {
+        BridgePauserStorage.data().unpauser = unpauser;
+    }
+
+    function setPaused(bool paused) internal {
+        _state.provider.paused = paused;
+    }
+
+    function setPauseExpiry(uint64 pauseExpiry) internal {
+        BridgePauserStorage.data().pauseExpiry = pauseExpiry;
     }
 }

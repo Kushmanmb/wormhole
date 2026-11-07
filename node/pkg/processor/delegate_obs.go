@@ -30,7 +30,25 @@ func (p *Processor) publishDelegateObservation(d *gossipv1.DelegateObservation) 
 }
 
 // delegateObservationToMessagePublication converts a DelegateObservation into a MessagePublication that can be passed through the normal processor pipeline.
-// Returns error on invalid delegate observation input
+// Returns error on invalid delegate observation input.
+//
+// VERSION SKEW: the NumVariantsVerificationState check below is
+// forward-incompatible in a way worth flagging: a delegate guardian on a
+// newer build that adds a VerificationState variant will produce observations
+// the canonical rejects here, even though the canonical's consensus path
+// normalizes this field away (NormalizeForDelegateConsensus → NotVerified).
+// If enough delegates upgrade ahead of canonicals, the silently-dropped
+// observations reduce the effective quorum count and reintroduce the stall
+// pattern — operators only see the per-observation "failed to convert
+// delegate observation to message publication" warn, with no aggregated
+// signal that quorum is being denied. When extending VerificationState,
+// either deploy canonicals first or relax this check.
+//
+// The KnownChainIDFromNumber check has the same forward-incompatibility
+// shape but is not flagged separately: a canonical that doesn't know an
+// emitter chain can't reason about it downstream anyway (governor wouldn't
+// catch transfers from it, etc.), so the deploy-ordering constraint isn't
+// specific to delegated guardians.
 func delegateObservationToMessagePublication(d *gossipv1.DelegateObservation) (*node_common.MessagePublication, error) {
 	if d == nil {
 		return nil, fmt.Errorf("nil delegate observation")
@@ -65,7 +83,7 @@ func delegateObservationToMessagePublication(d *gossipv1.DelegateObservation) (*
 
 	mp := &node_common.MessagePublication{
 		TxID:             d.TxHash,
-		Timestamp:        time.Unix(int64(d.Timestamp), 0), // Timestamp is uint32 representing seconds since UNIX epoch so is safe to convert.
+		Timestamp:        vaa.TimeFromUnixUint32(d.Timestamp),
 		Nonce:            d.Nonce,
 		Sequence:         d.Sequence,
 		ConsistencyLevel: uint8(d.ConsistencyLevel),

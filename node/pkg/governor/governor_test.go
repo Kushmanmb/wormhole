@@ -16,13 +16,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/certusone/wormhole/node/pkg/common"
-	guardianDB "github.com/certusone/wormhole/node/pkg/db"
 	"github.com/wormhole-foundation/wormhole/sdk/vaa"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"go.uber.org/zap/zaptest"
 	"go.uber.org/zap/zaptest/observer"
+
+	"github.com/certusone/wormhole/node/pkg/common"
+	guardianDB "github.com/certusone/wormhole/node/pkg/db"
+	"github.com/certusone/wormhole/node/pkg/testutils"
 )
 
 // scaleValue is a helper function to scale a value by the guardianDB.ScaledValueFactor for test assertions.
@@ -232,9 +234,9 @@ func TestSumAllFromToday(t *testing.T) {
 	transferTime, err := time.Parse("Jan 2, 2006 at 3:04pm (MST)", "Jun 1, 2022 at 11:00am (CST)")
 	require.NoError(t, err)
 	dbTransfer := &guardianDB.Transfer{ScaledValue: 125000, Timestamp: transferTime}
-	transfer, err := newTransferFromDbTransfer(dbTransfer)
+	transferFromDb, err := newTransferFromDbTransfer(dbTransfer)
 	require.NoError(t, err)
-	transfers = append(transfers, transfer)
+	transfers = append(transfers, transferFromDb)
 	sum, updatedTransfers, err := gov.trimAndSumValue(transfers, now.Add(-time.Hour*24))
 	require.NoError(t, err)
 	assert.Equal(t, uint64(125000), uint64(sum)) // #nosec G115 -- If this overflowed the test would fail anyway
@@ -450,8 +452,8 @@ func TestChainEntrySumExceedsDailyLimit(t *testing.T) {
 	require.NoError(t, err)
 
 	var transfers_from_emitter []transfer
-	transferTime, err := time.Parse("2006-Jan-02", "2024-Feb-19")
-	require.NoError(t, err)
+	transferTime, timeErr := time.Parse("2006-Jan-02", "2024-Feb-19")
+	require.NoError(t, timeErr)
 
 	emitterTransferValue := uint64(125000)
 
@@ -460,11 +462,11 @@ func TestChainEntrySumExceedsDailyLimit(t *testing.T) {
 
 	// Create a lot of transfers. Their total value should exceed `emitterLimit`
 	for i := 0; i < 25; i++ {
-		transfer, err := newTransferFromDbTransfer(&guardianDB.Transfer{ScaledValue: emitterTransferValue, Timestamp: transferTime})
-		require.NoError(t, err)
+		transferFromDb, transferErr := newTransferFromDbTransfer(&guardianDB.Transfer{ScaledValue: emitterTransferValue, Timestamp: transferTime})
+		require.NoError(t, transferErr)
 		transfers_from_emitter = append(
 			transfers_from_emitter,
-			transfer,
+			transferFromDb,
 		)
 	}
 
@@ -501,11 +503,11 @@ func TestTrimAndSumValueOverflowErrors(t *testing.T) {
 
 	emitterChainId := vaa.ChainIDSolana
 
-	transfer, err := newTransferFromDbTransfer(&guardianDB.Transfer{ScaledValue: math.MaxInt64, Timestamp: transferTime})
+	transferFromDb, err := newTransferFromDbTransfer(&guardianDB.Transfer{ScaledValue: math.MaxInt64, Timestamp: transferTime})
 	require.NoError(t, err)
 	transfer2, err := newTransferFromDbTransfer(&guardianDB.Transfer{ScaledValue: 1, Timestamp: transferTime})
 	require.NoError(t, err)
-	transfers_from_emitter = append(transfers_from_emitter, transfer, transfer2)
+	transfers_from_emitter = append(transfers_from_emitter, transferFromDb, transfer2)
 
 	// Populate chainEntry and ChainGovernor
 	emitter := &chainEntry{
@@ -559,9 +561,9 @@ func TestTrimOneOfTwoTransfers(t *testing.T) {
 	transferTime1, err := time.Parse("Jan 2, 2006 at 3:04pm (MST)", "May 31, 2022 at 11:59am (CST)")
 	require.NoError(t, err)
 	dbTransfer := &guardianDB.Transfer{ScaledValue: 125000, Timestamp: transferTime1}
-	transfer, err := newTransferFromDbTransfer(dbTransfer)
+	transferFromDb, err := newTransferFromDbTransfer(dbTransfer)
 	require.NoError(t, err)
-	transfers = append(transfers, transfer)
+	transfers = append(transfers, transferFromDb)
 
 	// But the second should not.
 	transferTime2, err := time.Parse("Jan 2, 2006 at 3:04pm (MST)", "May 31, 2022 at 1:00pm (CST)")
@@ -715,7 +717,7 @@ func TestVaaForUninterestingEmitterChain(t *testing.T) {
 
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDSolana,
@@ -744,7 +746,7 @@ func TestVaaForUninterestingEmitterAddress(t *testing.T) {
 
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -774,7 +776,7 @@ func TestVaaForUninterestingPayloadType(t *testing.T) {
 
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -875,7 +877,7 @@ func TestVaaForUninterestingToken(t *testing.T) {
 
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -909,7 +911,7 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 
 	// Set-up time
 	gov.setDayLengthInMinutes(24 * 60)
-	transferTime := time.Unix(int64(1654543099), 0)
+	transferTime := testutils.MustTimeFromUnix(t, 1654543099)
 
 	// Solana USDC used as the flow cancelling asset. This ensures that the flow cancel mechanism works
 	// when the Origin chain of the asset does not match the emitter chain
@@ -993,7 +995,7 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 	// msg and asset that are NOT flow cancelable
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x888888f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a8888"),
-		Timestamp:        time.Unix(int64(transferTime.Unix()+1), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, transferTime.Unix()+1),
 		Nonce:            uint32(3),
 		Sequence:         uint64(3),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1015,11 +1017,11 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 	chainEntrySui, exists := gov.chains[vaa.ChainIDSui]
 	assert.True(t, exists)
 	assert.NotNil(t, chainEntrySui)
-	sumEth, ethTransfers, err := gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err := gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, len(ethTransfers))
 	assert.Zero(t, sumEth)
 	require.NoError(t, err)
-	sumSui, suiTransfers, err := gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(1654543099), 0))
+	sumSui, suiTransfers, err := gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, 1654543099))
 	assert.Zero(t, len(suiTransfers))
 	assert.Zero(t, sumSui)
 	require.NoError(t, err)
@@ -1041,7 +1043,7 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 	chainEntrySui = gov.chains[vaa.ChainIDSui]
 	assert.Equal(t, int(1), len(chainEntryEthereum.transfers))
 	assert.Equal(t, int(1), len(chainEntrySui.transfers))
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(5000), sumEth) // Outbound on Ethereum
 	assert.Equal(t, int(1), len(ethTransfers))
 	require.NoError(t, err)
@@ -1049,11 +1051,11 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 	// Outbound check:
 	// - ensure that the sum of the transfers is equal to the value of the inverse transfer
 	// - ensure the actual governor usage is Zero (any negative value is converted to zero by TrimAndSumValueForChain)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, 1, len(suiTransfers))      // A single NEGATIVE transfer
 	assert.Equal(t, scaleValue(-5000), sumSui) // Ensure the inverse (negative) transfer is in the Sui chain Entry
 	require.NoError(t, err)
-	suiGovernorUsage, err := gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err := gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, suiGovernorUsage) // Actual governor usage must not be negative.
 	require.NoError(t, err)
 
@@ -1083,15 +1085,15 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 	chainEntrySui = gov.chains[vaa.ChainIDSui]
 	assert.Equal(t, int(2), len(chainEntryEthereum.transfers)) // One for inbound refund and another for outbound
 	assert.Equal(t, int(2), len(chainEntrySui.transfers))      // One for inbound refund and another for outbound
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(4000), sumEth)  // Out was 5000 then the cancellation makes this 4000.
 	assert.Equal(t, int(2), len(ethTransfers)) // Two transfers: outbound 5000 and inverse -1000 transfer
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(2), len(suiTransfers))
 	assert.Equal(t, scaleValue(-4000), sumSui) // -5000 from Ethereum inverse added to 1000 from sending to Ethereum
 	require.NoError(t, err)
-	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, suiGovernorUsage) // Actual governor usage must not be negative.
 	require.NoError(t, err)
 
@@ -1118,15 +1120,15 @@ func TestFlowCancelProcessMsgForTimeFullCancel(t *testing.T) {
 	chainEntrySui = gov.chains[vaa.ChainIDSui]
 	assert.Equal(t, int(3), len(chainEntryEthereum.transfers)) // One for inbound refund and another for outbound
 	assert.Equal(t, int(2), len(chainEntrySui.transfers))      // One for inbound refund and another for outbound
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(5500), sumEth)  // The value of the non-cancelled transfer
 	assert.Equal(t, int(3), len(ethTransfers)) // Two transfers cancel each other out
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(2), len(suiTransfers))
 	assert.Equal(t, scaleValue(-4000), sumSui) // Sui's limit should not change
 	require.NoError(t, err)
-	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, suiGovernorUsage) // Actual governor usage must not be negative.
 	require.NoError(t, err)
 }
@@ -1146,7 +1148,7 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 
 	// Set-up time
 	gov.setDayLengthInMinutes(24 * 60)
-	transferTime := time.Unix(int64(1654543099), 0)
+	transferTime := testutils.MustTimeFromUnix(t, 1654543099)
 
 	// Solana USDC used as the flow cancelling asset. This ensures that the flow cancel mechanism works
 	// when the Origin chain of the asset does not match the emitter chain
@@ -1224,7 +1226,7 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 	// msg and asset that are NOT flow cancelable
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x888888f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a8888"),
-		Timestamp:        time.Unix(int64(transferTime.Unix()+1), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, transferTime.Unix()+1),
 		Nonce:            uint32(3),
 		Sequence:         uint64(3),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1246,11 +1248,11 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 	chainEntrySui, exists := gov.chains[vaa.ChainIDSui]
 	assert.True(t, exists)
 	assert.NotNil(t, chainEntrySui)
-	sumEth, ethTransfers, err := gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err := gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, len(ethTransfers))
 	assert.Zero(t, sumEth)
 	require.NoError(t, err)
-	sumSui, suiTransfers, err := gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(1654543099), 0))
+	sumSui, suiTransfers, err := gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, 1654543099))
 	assert.Zero(t, len(suiTransfers))
 	assert.Zero(t, sumSui)
 	require.NoError(t, err)
@@ -1271,7 +1273,7 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 	chainEntrySui = gov.chains[vaa.ChainIDSui]
 	assert.Equal(t, int(1), len(chainEntryEthereum.transfers))
 	assert.Equal(t, int(1), len(chainEntrySui.transfers))
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(5000), sumEth) // Outbound on Ethereum
 	assert.Equal(t, int(1), len(ethTransfers))
 	require.NoError(t, err)
@@ -1279,11 +1281,11 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 	// Outbound check:
 	// - ensure that the sum of the transfers is equal to the value of the inverse transfer
 	// - ensure the actual governor usage is Zero (any negative value is converted to zero by TrimAndSumValueForChain)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, 1, len(suiTransfers))      // A single NEGATIVE transfer
 	assert.Equal(t, scaleValue(-5000), sumSui) // Ensure the inverse (negative) transfer is in the Sui chain Entry
 	require.NoError(t, err)
-	suiGovernorUsage, err := gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err := gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, suiGovernorUsage) // Actual governor usage must not be negative.
 	require.NoError(t, err)
 
@@ -1308,11 +1310,11 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 	chainEntrySui = gov.chains[vaa.ChainIDSui]
 	assert.Equal(t, int(2), len(chainEntryEthereum.transfers)) // One for inbound refund and another for outbound
 	assert.Equal(t, int(2), len(chainEntrySui.transfers))      // One for inbound refund and another for outbound
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(0), sumEth)     // Out was 4000 then the cancellation makes this zero.
 	assert.Equal(t, int(2), len(ethTransfers)) // Two transfers cancel each other out
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(2), len(suiTransfers))
 	assert.Equal(t, scaleValue(0), sumSui)
 	require.NoError(t, err)
@@ -1335,11 +1337,11 @@ func TestFlowCancelProcessMsgForTimePartialCancel(t *testing.T) {
 	chainEntrySui = gov.chains[vaa.ChainIDSui]
 	assert.Equal(t, int(3), len(chainEntryEthereum.transfers)) // One for inbound refund and another for outbound
 	assert.Equal(t, int(2), len(chainEntrySui.transfers))      // One for inbound refund and another for outbound
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(2500), sumEth)  // The value of the non-cancelled transfer
 	assert.Equal(t, int(3), len(ethTransfers)) // Two transfers cancel each other out
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(2), len(suiTransfers))
 	assert.Equal(t, scaleValue(0), sumSui) // Sui's limit is still zero
 	require.NoError(t, err)
@@ -1372,7 +1374,7 @@ func TestTransfersUpToAndOverTheLimit(t *testing.T) {
 	// The first two transfers should be accepted.
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1383,7 +1385,7 @@ func TestTransfersUpToAndOverTheLimit(t *testing.T) {
 
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(2),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1425,7 +1427,7 @@ func TestTransfersUpToAndOverTheLimit(t *testing.T) {
 
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(3),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1448,7 +1450,7 @@ func TestTransfersUpToAndOverTheLimit(t *testing.T) {
 	// But a small one should still go through.
 	msg4 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(4),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1496,7 +1498,7 @@ func TestPendingTransferBeingReleased(t *testing.T) {
 
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1528,7 +1530,7 @@ func TestPendingTransferBeingReleased(t *testing.T) {
 
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1560,7 +1562,7 @@ func TestPendingTransferBeingReleased(t *testing.T) {
 
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1592,7 +1594,7 @@ func TestPendingTransferBeingReleased(t *testing.T) {
 
 	msg4 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1674,7 +1676,7 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 
 	// Set-up time
 	gov.setDayLengthInMinutes(24 * 60)
-	transferTime := time.Unix(int64(1654543099), 0)
+	transferTime := testutils.MustTimeFromUnix(t, 1654543099)
 
 	// Solana USDC used as the flow cancelling asset. This ensures that the flow cancel mechanism works
 	// when the Origin chain of the asset does not match the emitter chain
@@ -1719,7 +1721,7 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	// First message: consume most of the dailyLimit for the emitter chain
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x888888f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a8888"),
-		Timestamp:        time.Unix(int64(transferTime.Unix()+1), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, transferTime.Unix()+1),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1737,7 +1739,7 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	// Second message: This transfer gets queued because the limit is exhausted
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x888888f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a8888"),
-		Timestamp:        time.Unix(int64(transferTime.Unix()+2), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, transferTime.Unix()+2),
 		Nonce:            uint32(2),
 		Sequence:         uint64(2),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1756,7 +1758,7 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	// reduces the Governor usage for that chain.
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x888888f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a8888"),
-		Timestamp:        time.Unix(int64(transferTime.Unix()+3), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, transferTime.Unix()+3),
 		Nonce:            uint32(3),
 		Sequence:         uint64(3),
 		EmitterChain:     vaa.ChainIDSui,
@@ -1778,12 +1780,12 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	chainEntrySui, exists := gov.chains[vaa.ChainIDSui]
 	assert.True(t, exists)
 	assert.NotNil(t, chainEntrySui)
-	sumEth, ethTransfers, err := gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err := gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, len(ethTransfers))
 	assert.Zero(t, len(chainEntryEthereum.pending))
 	assert.Zero(t, sumEth)
 	require.NoError(t, err)
-	sumSui, suiTransfers, err := gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(1654543099), 0))
+	sumSui, suiTransfers, err := gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, 1654543099))
 	assert.Zero(t, len(suiTransfers))
 	assert.Zero(t, sumSui)
 	require.NoError(t, err)
@@ -1806,7 +1808,7 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	assert.Equal(t, int(1), len(chainEntryEthereum.transfers))
 	assert.Equal(t, int(0), len(chainEntryEthereum.pending)) // One for inbound refund and another for outbound
 	assert.Equal(t, int(1), len(chainEntrySui.transfers))
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(10000), sumEth) // Equal to total dailyLimit
 	assert.Equal(t, int(1), len(ethTransfers))
 	require.NoError(t, err)
@@ -1814,17 +1816,17 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	// Outbound check:
 	// - ensure that the sum of the transfers is equal to the value of the inverse transfer
 	// - ensure the actual governor usage is Zero (any negative value is converted to zero by TrimAndSumValueForChain)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, 1, len(suiTransfers))       // A single NEGATIVE transfer
 	assert.Equal(t, scaleValue(-10000), sumSui) // Ensure the inverse (negative) transfer is in the Sui chain Entry
 	require.NoError(t, err)
-	suiGovernorUsage, err := gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err := gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, suiGovernorUsage) // Actual governor usage must not be negative.
 	require.NoError(t, err)
 
 	// Perform a SECOND transfer (Ethereum --> Sui again)
 	// When a transfer is queued, ProcessMsgForTime should return false.
-	result, err = gov.processMsgForTime(&msg2, time.Unix(int64(transferTime.Unix()-1000), 0))
+	result, err = gov.processMsgForTime(&msg2, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.False(t, result)
 	require.NoError(t, err)
 
@@ -1842,15 +1844,15 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	assert.Equal(t, int(1), len(chainEntryEthereum.transfers)) // One from previous step
 	assert.Equal(t, int(1), len(chainEntryEthereum.pending))   // One for inbound refund and another for outbound
 	assert.Equal(t, int(1), len(chainEntrySui.transfers))      // One inverse transfer. Inverse from pending not added yet
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(10000), sumEth) // Same as before: full dailyLimit
 	assert.Equal(t, int(1), len(ethTransfers)) // Same as before
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(1), len(suiTransfers))  // just the inverse from before
 	assert.Equal(t, scaleValue(-10000), sumSui) // Unchanged.
 	require.NoError(t, err)
-	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, suiGovernorUsage) // Actual governor usage must not be negative.
 	require.NoError(t, err)
 
@@ -1873,15 +1875,15 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	assert.Equal(t, int(2), len(chainEntryEthereum.transfers))
 	assert.Equal(t, int(1), len(chainEntryEthereum.pending)) // We have not yet released the pending transfer
 	assert.Equal(t, int(2), len(chainEntrySui.transfers))
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(9000), sumEth)  // We freed up room because of Sui incoming
 	assert.Equal(t, int(2), len(ethTransfers)) // Two transfers cancel each other out
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(2), len(suiTransfers))
 	assert.Equal(t, scaleValue(-9000), sumSui) // We consumed some outbound capacity
 	require.NoError(t, err)
-	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, uint64(0), suiGovernorUsage) // Still zero because it's still negative
 	require.NoError(t, err)
 
@@ -1889,7 +1891,7 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	// on the pending transfer being released as a result of flow-cancelling and not because 24 hours have passed.
 	// NOTE that even though the function says "Checked..." it modifies `gov` as a side-effect when a pending
 	// transfer is ready to be released
-	toBePublished, err := gov.checkPendingForTime(time.Unix(int64(transferTime.Unix()-1000), 0))
+	toBePublished, err := gov.checkPendingForTime(testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	require.NoError(t, err)
 	assert.Equal(t, 1, len(toBePublished))
 
@@ -1913,15 +1915,15 @@ func TestPendingTransferFlowCancelsWhenReleased(t *testing.T) {
 	assert.Equal(t, int(3), len(chainEntryEthereum.transfers)) // Two outbound, one inverse from Sui
 	assert.Equal(t, int(0), len(chainEntryEthereum.pending))   // Released
 	assert.Equal(t, int(3), len(chainEntrySui.transfers))      // One outbound, two inverses from Ethereum
-	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumEth, ethTransfers, err = gov.trimAndSumValue(chainEntryEthereum.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(9500), sumEth)
 	assert.Equal(t, int(3), len(ethTransfers))
 	require.NoError(t, err)
-	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumSui, suiTransfers, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, int(3), len(suiTransfers)) // New inverse transfer added after pending transfer was released
 	assert.Equal(t, scaleValue(-9500), sumSui) // Flow-cancelling inverse transfer added to Sui after released
 	require.NoError(t, err)
-	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	suiGovernorUsage, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, uint64(0), suiGovernorUsage) // Still zero
 	require.NoError(t, err)
 }
@@ -1945,7 +1947,7 @@ func TestSmallerPendingTransfersAfterBigOneShouldGetReleased(t *testing.T) {
 	// The first VAA should be accepted.
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -1975,7 +1977,7 @@ func TestSmallerPendingTransfersAfterBigOneShouldGetReleased(t *testing.T) {
 	// And so should the second.
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2005,7 +2007,7 @@ func TestSmallerPendingTransfersAfterBigOneShouldGetReleased(t *testing.T) {
 	// But the third, big one should be queued up.
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2035,7 +2037,7 @@ func TestSmallerPendingTransfersAfterBigOneShouldGetReleased(t *testing.T) {
 	// A fourth, smaller, but still too big one, should get enqueued.
 	msg4 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2065,7 +2067,7 @@ func TestSmallerPendingTransfersAfterBigOneShouldGetReleased(t *testing.T) {
 	// A fifth, smaller, but still too big one, should also get enqueued.
 	msg5 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2095,7 +2097,7 @@ func TestSmallerPendingTransfersAfterBigOneShouldGetReleased(t *testing.T) {
 	// A sixth, big one should also get enqueued.
 	msg6 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2251,7 +2253,7 @@ func TestLargeTransactionGetsEnqueuedAndReleasedWhenTheTimerExpires(t *testing.T
 	// The first small transfer should be accepted.
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2281,7 +2283,7 @@ func TestLargeTransactionGetsEnqueuedAndReleasedWhenTheTimerExpires(t *testing.T
 	// And so should the second.
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(2),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2311,7 +2313,7 @@ func TestLargeTransactionGetsEnqueuedAndReleasedWhenTheTimerExpires(t *testing.T
 	// But the third big one should get enqueued.
 	msg3 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(3),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2465,7 +2467,7 @@ func TestSmallTransactionsGetReleasedWhenTheTimerExpires(t *testing.T) {
 	// Submit a small transfer that will get enqueued due to the low daily limit.
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2568,7 +2570,7 @@ func TestTransferPayloadTooShort(t *testing.T) {
 
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -2656,7 +2658,7 @@ func TestDontReloadDuplicates(t *testing.T) {
 		ReleaseTime: now.Add(time.Hour * 24),
 		Msg: common.MessagePublication{
 			TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-			Timestamp:        time.Unix(int64(1654543099), 0),
+			Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 			Nonce:            uint32(1),
 			Sequence:         uint64(200),
 			EmitterChain:     vaa.ChainIDEthereum,
@@ -2671,7 +2673,7 @@ func TestDontReloadDuplicates(t *testing.T) {
 		ReleaseTime: now.Add(time.Hour * 24),
 		Msg: common.MessagePublication{
 			TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-			Timestamp:        time.Unix(int64(1654543099), 0),
+			Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 			Nonce:            uint32(1),
 			Sequence:         uint64(201),
 			EmitterChain:     vaa.ChainIDEthereum,
@@ -2701,6 +2703,45 @@ func TestDontReloadDuplicates(t *testing.T) {
 	assert.Equal(t, uint64(3000), valueTrans)
 	assert.Equal(t, 2, numPending)
 	assert.Equal(t, uint64(4436), valuePending)
+}
+
+// TestReloadClearsMsgsSeen verifies that Reload() clears the msgsSeen map so that
+// transfers reloaded from the database are not incorrectly rejected as duplicates.
+func TestReloadClearsMsgsSeen(t *testing.T) {
+	ctx := context.Background()
+	gov := newChainGovernorForTest(t, ctx)
+
+	tokenAddrStr := "0xDDb64fE46a91D46ee29420539FC25FD07c5FEa3E" //nolint:gosec
+	toAddrStr := "0x707f9118e33a9b8998bea41dd0d46f38bb963fc8"
+
+	msg := common.MessagePublication{
+		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
+		Nonce:            uint32(1),
+		Sequence:         uint64(1),
+		EmitterChain:     vaa.ChainIDEthereum,
+		EmitterAddress:   gov.chains[vaa.ChainIDEthereum].emitterAddr,
+		ConsistencyLevel: uint8(32),
+		Payload: buildMockTransferPayloadBytes(1,
+			vaa.ChainIDEthereum,
+			tokenAddrStr,
+			vaa.ChainIDPolygon,
+			toAddrStr,
+			1.25,
+		),
+	}
+
+	// Process a transfer so msgsSeen is populated.
+	canPost, err := gov.processMsgForTime(&msg, time.Now())
+	require.NoError(t, err)
+	assert.True(t, canPost)
+	assert.Equal(t, 1, len(gov.msgsSeen))
+
+	// Reload should clear msgsSeen.
+	result, err := gov.Reload()
+	require.NoError(t, err)
+	assert.Contains(t, result, "reset and reloaded")
+	assert.Equal(t, 0, len(gov.msgsSeen))
 }
 
 // With the addition of the flow-cancel feature, it's possible to in a way "exceed the daily limit" of outflow from a
@@ -2835,14 +2876,14 @@ func TestReloadTransfersNearCapacity(t *testing.T) {
 	_, valueTransferred, _, _ := gov.getStatsForAllChains()
 	assert.Equal(t, uint64(20000), valueTransferred)
 
-	governorUsageEth, err := gov.trimAndSumValueForChain(chainEntryEth, time.Unix(int64(transferTime.Unix()-1000), 0))
+	governorUsageEth, err := gov.trimAndSumValueForChain(chainEntryEth, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, uint64(10000)*guardianDB.ScaledValueFactor, governorUsageEth)
 	assert.Zero(t, governorUsageEth-chainEntryEth.dailyLimit*guardianDB.ScaledValueFactor) // Make sure we used the whole capacity
 	require.NoError(t, err)
-	governorUsageSui, err := gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	governorUsageSui, err := gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, governorUsageSui)
 	require.NoError(t, err)
-	sumTransfersSui, _, err := gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumTransfersSui, _, err := gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(-10000), sumTransfersSui)
 	require.NoError(t, err)
 
@@ -2859,15 +2900,15 @@ func TestReloadTransfersNearCapacity(t *testing.T) {
 	_, valueTransferred, _, _ = gov.getStatsForAllChains()
 	assert.Equal(t, uint64(24000), valueTransferred)
 
-	governorUsageEth, err = gov.trimAndSumValueForChain(chainEntryEth, time.Unix(int64(transferTime.Unix()-1000), 0))
+	governorUsageEth, err = gov.trimAndSumValueForChain(chainEntryEth, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, uint64(8000)*guardianDB.ScaledValueFactor, governorUsageEth)
 	// Remaining capacity
 	assert.Equal(t, int(chainEntryEth.dailyLimit*guardianDB.ScaledValueFactor-governorUsageEth), 2000*guardianDB.ScaledValueFactor) // #nosec G115 -- If this overflowed the test would fail
 	require.NoError(t, err)
-	governorUsageSui, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	governorUsageSui, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Zero(t, governorUsageSui)
 	require.NoError(t, err)
-	sumTransfersSui, _, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumTransfersSui, _, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(-8000), sumTransfersSui)
 	require.NoError(t, err)
 
@@ -2883,15 +2924,15 @@ func TestReloadTransfersNearCapacity(t *testing.T) {
 	assert.Equal(t, 6, numTrans)                   // 3 transfers and their inverse flow transfers on the TargetChain
 	assert.Equal(t, int64(0), netValueTransferred) // Value cancels out for all transfers
 
-	governorUsageEth, err = gov.trimAndSumValueForChain(chainEntryEth, time.Unix(int64(transferTime.Unix()-1000), 0))
+	governorUsageEth, err = gov.trimAndSumValueForChain(chainEntryEth, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, uint64(8050)*guardianDB.ScaledValueFactor, governorUsageEth)
 	// Remaining capacity
 	assert.Equal(t, int(chainEntryEth.dailyLimit*guardianDB.ScaledValueFactor-governorUsageEth), 1950*guardianDB.ScaledValueFactor) // #nosec G115 -- If this overflowed the test would fail
 	require.NoError(t, err)
-	governorUsageSui, err = gov.trimAndSumValueForChain(chainEntrySui, time.Unix(int64(transferTime.Unix()-1000), 0))
+	governorUsageSui, err = gov.trimAndSumValueForChain(chainEntrySui, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	require.NoError(t, err)
 	assert.Zero(t, governorUsageSui)
-	sumTransfersSui, _, err = gov.trimAndSumValue(chainEntrySui.transfers, time.Unix(int64(transferTime.Unix()-1000), 0))
+	sumTransfersSui, _, err = gov.trimAndSumValue(chainEntrySui.transfers, testutils.MustTimeFromUnix(t, transferTime.Unix()-1000))
 	assert.Equal(t, scaleValue(-8050), sumTransfersSui)
 	require.NoError(t, err)
 
@@ -3029,7 +3070,7 @@ func TestReobservationOfPublishedMsg(t *testing.T) {
 	// The first transfer should be accepted.
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -3089,7 +3130,7 @@ func TestReobservationOfEnqueued(t *testing.T) {
 	// A big transfer should get enqueued.
 	msg := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -3148,7 +3189,7 @@ func TestReusedMsgIdWithDifferentPayloadGetsProcessed(t *testing.T) {
 	// The first transfer should be accepted.
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -3178,7 +3219,7 @@ func TestReusedMsgIdWithDifferentPayloadGetsProcessed(t *testing.T) {
 	// A second message with the same msgId but a different payload should also get published and apply to the notional value.
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -3349,7 +3390,7 @@ func TestPendingTransferWithBadPayloadGetsDroppedNotReleased(t *testing.T) {
 	// Create two big transactions.
 	msg1 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(1),
 		Sequence:         uint64(1),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -3366,7 +3407,7 @@ func TestPendingTransferWithBadPayloadGetsDroppedNotReleased(t *testing.T) {
 
 	msg2 := common.MessagePublication{
 		TxID:             hashToTxID("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063"),
-		Timestamp:        time.Unix(int64(1654543099), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 		Nonce:            uint32(2),
 		Sequence:         uint64(2),
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -3909,7 +3950,7 @@ func Test_SubDollarTransfersAccumulate(t *testing.T) {
 			for i := 0; i < tt.numTransfers; i++ {
 				msg := common.MessagePublication{
 					TxID:             hashToTxID(fmt.Sprintf("0x%d", i)),
-					Timestamp:        time.Unix(int64(1654543099), 0),
+					Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 					Nonce:            uint32(i), // #nosec G115 -- Test values will not overflow
 					Sequence:         uint64(i), // #nosec G115 -- Test values will not overflow
 					EmitterChain:     vaa.ChainIDEthereum,
@@ -3918,8 +3959,8 @@ func Test_SubDollarTransfersAccumulate(t *testing.T) {
 					Payload:          payloadBytes,
 				}
 
-				canPost, err := gov.processMsgForTime(&msg, now)
-				require.NoError(t, err)
+				canPost, processErr := gov.processMsgForTime(&msg, now)
+				require.NoError(t, processErr)
 				assert.True(t, canPost, "transfer %d should be accepted", i)
 			}
 
@@ -3932,7 +3973,7 @@ func Test_SubDollarTransfersAccumulate(t *testing.T) {
 			// Verify we're at the limit: the next transfer should be enqueued
 			overflowMsg := common.MessagePublication{
 				TxID:             hashToTxID("0xoverflow"),
-				Timestamp:        time.Unix(int64(1654543099), 0),
+				Timestamp:        testutils.MustTimeFromUnix(t, 1654543099),
 				Nonce:            uint32(tt.numTransfers), // #nosec G115 -- Test values will not overflow
 				Sequence:         uint64(tt.numTransfers), // #nosec G115 -- Test values will not overflow
 				EmitterChain:     vaa.ChainIDEthereum,

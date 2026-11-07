@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"sort"
 	"strings"
@@ -37,7 +36,7 @@ var AdminClientListNodes = &cobra.Command{
 
 func runListNodes(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getPublicRPCServiceClient(ctx, *clientSocketPath)
+	conn, c, err := getPublicRPCServiceClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get publicrpc client: %v", err)
 	}
@@ -94,7 +93,6 @@ func runListNodes(cmd *cobra.Command, args []string) {
 		{"Polygon", vaa.ChainIDPolygon},
 		{"Avalanche", vaa.ChainIDAvalanche},
 		{"Algorand", vaa.ChainIDAlgorand},
-		{"Fantom", vaa.ChainIDFantom},
 		{"Klaytn", vaa.ChainIDKlaytn},
 		{"Celo", vaa.ChainIDCelo},
 		{"Near", vaa.ChainIDNear},
@@ -112,9 +110,6 @@ func runListNodes(cmd *cobra.Command, args []string) {
 		// Filecoin is not supported in the guardian.
 		{"Sei", vaa.ChainIDSei},
 		// Rootstock is not supported in the guardian.
-		{"Scroll", vaa.ChainIDScroll},
-		{"Mantle", vaa.ChainIDMantle},
-		{"XLayer", vaa.ChainIDXLayer},
 		{"Linea", vaa.ChainIDLinea},
 		{"Berachain", vaa.ChainIDBerachain},
 		{"SeiEVM", vaa.ChainIDSeiEVM},
@@ -135,6 +130,13 @@ func runListNodes(cmd *cobra.Command, args []string) {
 		{"Moca", vaa.ChainIDMoca},
 		{"MegaETH", vaa.ChainIDMegaETH},
 		{"ZeroGravity", vaa.ChainIDZeroGravity},
+		{"Tempo", vaa.ChainIDTempo},
+		{"Nexus", vaa.ChainIDNexus},
+		{"Tron", vaa.ChainIDTron},
+		{"Arc", vaa.ChainIDArc},
+		{"RobinhoodChain", vaa.ChainIDRobinhoodChain},
+		{"Hydration", vaa.ChainIDHydration},
+		{"Elysium", vaa.ChainIDElysium},
 		// The IBC chains (4000 range) are not included here.
 		{"Sepolia", vaa.ChainIDSepolia},
 		{"ArbitrumSepolia", vaa.ChainIDArbitrumSepolia},
@@ -179,15 +181,19 @@ func runListNodes(cmd *cobra.Command, args []string) {
 		truncAddrs := make(map[vaa.ChainID]string)
 		errors := map[vaa.ChainID]uint64{}
 		for _, n := range h.RawHeartbeat.Networks {
-			if n.Id > math.MaxUint16 {
-				log.Fatalf("heartbeat chain id is greater than MaxUint16: %v", n.Id)
+			// Convert uint32 to ChainID. We deliberately don't use [vaa.KnownChainIDFromNumber] here
+			// in case the Guardians are running with different versions and so have a different set of
+			// chain IDs that are considered "known".
+			chainId, err := vaa.ChainIDFromNumber[uint32](n.Id)
+			if err != nil {
+				log.Fatalf("invalid chain id in heartbeat: %v", err)
 			}
-			heights[vaa.ChainID(n.Id)] = n.Height
-			errors[vaa.ChainID(n.Id)] = n.ErrorCount
+			heights[chainId] = n.Height
+			errors[chainId] = n.ErrorCount
 			if len(n.ContractAddress) >= 16 {
-				truncAddrs[vaa.ChainID(n.Id)] = n.ContractAddress[:16]
+				truncAddrs[chainId] = n.ContractAddress[:16]
 			} else {
-				truncAddrs[vaa.ChainID(n.Id)] = "INVALID"
+				truncAddrs[chainId] = "INVALID"
 			}
 		}
 

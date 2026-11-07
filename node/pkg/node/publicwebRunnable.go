@@ -16,8 +16,11 @@ import (
 	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+const dialConnectTimeout = 10 * time.Second
 
 func allowCORSWrapper(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -57,17 +60,34 @@ func publicwebServiceRunnable(
 	tlsCacheDir string,
 ) supervisor.Runnable {
 	return func(ctx context.Context) error {
-		conn, err := grpc.DialContext(
-			ctx,
+		conn, dialErr := grpc.NewClient(
 			fmt.Sprintf("unix:///%s", upstreamAddr),
-			grpc.WithBlock(),
-			grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			return fmt.Errorf("failed to dial upstream: %s", err)
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+		)
+		if dialErr != nil {
+			return fmt.Errorf("failed to dial upstream: %s", dialErr)
+		}
+
+		// grpc.NewClient does not support blocking dials. The following code attempts to preserve the old behaviour.
+		conn.Connect()
+		dialCtx, dialCancel := context.WithTimeout(ctx, dialConnectTimeout)
+		defer dialCancel()
+		for {
+			state := conn.GetState()
+
+			// If the connection is ready, just break from the loop.
+			if state == connectivity.Ready {
+				break
+			}
+
+			// Wait until the state changes.
+			if !conn.WaitForStateChange(dialCtx, state) {
+				return fmt.Errorf("publicwebServiceRunnable: timed out waiting for upstream connection")
+			}
 		}
 
 		gwmux := runtime.NewServeMux()
-		err = publicrpcv1.RegisterPublicRPCServiceHandler(ctx, gwmux, conn)
+		err := publicrpcv1.RegisterPublicRPCServiceHandler(ctx, gwmux, conn)
 		if err != nil {
 			panic(err)
 		}
@@ -115,13 +135,13 @@ func publicwebServiceRunnable(
 
 		// If listenAddr is prefixed by "sd:", look for a matching systemd socket.
 		if strings.HasPrefix(listenAddr, "sd:") {
-			listeners, err := getSDListeners()
-			if err != nil {
-				return fmt.Errorf("failed to get systemd listeners: %w", err)
+			sdListeners, sdErr := getSDListeners()
+			if sdErr != nil {
+				return fmt.Errorf("failed to get systemd listeners: %w", sdErr)
 			}
 
 			addr := listenAddr[3:]
-			for _, v := range listeners {
+			for _, v := range sdListeners {
 				logger.Debug("found systemd socket", zap.String("addr", v.Addr().String()))
 				if v.Addr().String() == addr {
 					listener = v
@@ -129,9 +149,9 @@ func publicwebServiceRunnable(
 			}
 
 			if listener == nil {
-				all := make([]string, len(listeners))
-				for i := range listeners {
-					all[i] = listeners[i].Addr().String()
+				all := make([]string, len(sdListeners))
+				for i := range sdListeners {
+					all[i] = sdListeners[i].Addr().String()
 				}
 				return fmt.Errorf("no valid systemd listeners, got: %s", strings.Join(all, ","))
 			}
@@ -144,13 +164,13 @@ func publicwebServiceRunnable(
 		}
 
 		supervisor.Signal(ctx, supervisor.SignalHealthy)
-		errC := make(chan error)
+		errC := make(chan error, 1)
 		go func() {
 			logger.Info("publicweb server listening", zap.String("addr", srv.Addr))
 			if tlsHostname != "" {
-				errC <- srv.ServeTLS(listener, "", "") //nolint:channelcheck // Only does one write
+				errC <- srv.ServeTLS(listener, "", "") //nolint:channelcheck // Only does one write and one receive.
 			} else {
-				errC <- srv.Serve(listener) //nolint:channelcheck // Only does one write
+				errC <- srv.Serve(listener) //nolint:channelcheck // Only does one write and one receive.
 			}
 		}()
 		select {

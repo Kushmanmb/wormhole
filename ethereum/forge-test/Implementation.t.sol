@@ -948,7 +948,7 @@ contract TestImplementation is TestUtils {
             actionTransferFee,
             testChainId,
             amount,
-            addressToBytes32(address(0))
+            addressToBytes32(address(0x1234))
         );
         bytes memory vaa = signAndEncodeVM(
             timestamp,

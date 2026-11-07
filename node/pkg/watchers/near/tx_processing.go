@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/certusone/wormhole/node/pkg/common"
 	"github.com/certusone/wormhole/node/pkg/watchers"
@@ -22,10 +21,11 @@ import (
 )
 
 type NearWormholePublishEvent struct {
-	Standard    string `json:"standard"`
-	Event       string `json:"event"`
-	Data        string `json:"data"`
-	Nonce       uint32 `json:"nonce"`
+	Standard string `json:"standard"`
+	Event    string `json:"event"`
+	Data     string `json:"data"`
+	Nonce    uint32 `json:"nonce"`
+	// Emitter is sha256(account_name)
 	Emitter     string `json:"emitter"`
 	Seq         uint64 `json:"seq"`
 	BlockHeight uint64 `json:"block"`
@@ -177,14 +177,14 @@ func (e *Watcher) processWormholeLog(logger *zap.Logger, _ context.Context, job 
 		return errors.New("wormhole publish event.block does not equal receipt_outcome[x].block_height")
 	}
 
-	// SECURITY: extract emitter address and ensure that it has the correct format
-	emitter, err := hex.DecodeString(pubEvent.Emitter)
+	// SECURITY: extract emitterDigest and ensure that it has the correct format
+	emitterDigest, err := hex.DecodeString(pubEvent.Emitter)
 	if err != nil {
 		return err
 	}
 
-	// emitter is sha256(account_name), so it should be 32 bytes long.
-	if len(emitter) != 32 {
+	// [NearWormholePublishEvent.Emitter] is sha256(account_name), so it should be 32 bytes long.
+	if len(emitterDigest) != 32 {
 		logger.Error(
 			"Wormhole publish event malformed",
 			zap.String("error_type", "malformed_wormhole_event"),
@@ -196,8 +196,8 @@ func (e *Watcher) processWormholeLog(logger *zap.Logger, _ context.Context, job 
 	}
 
 	// Assemble the Message Publication Event
-	var a vaa.Address
-	copy(a[:], emitter)
+	var emitterDigestAddr vaa.Address
+	copy(emitterDigestAddr[:], emitterDigest)
 
 	txHashBytes, err := base58.Decode(job.txHash)
 	if err != nil {
@@ -234,17 +234,23 @@ func (e *Watcher) processWormholeLog(logger *zap.Logger, _ context.Context, job 
 
 	// SECURITY the timestamp of an observation is the timestamp of the block in which the wormhole core receipt has been finalized.
 	ts := outcomeBlockHeader.Timestamp
+	timestamp, err := vaa.TimeFromUnix(ts)
+	if err != nil {
+		return fmt.Errorf("invalid block timestamp for tx %s (block %d, time %d, seq %d): %w",
+			job.txHash, outcomeBlockHeader.Height, ts, pubEvent.Seq, err)
+	}
 
 	observation := &common.MessagePublication{
 		TxID:             txHashEthFormat.Bytes(),
-		Timestamp:        time.Unix(int64(ts), 0), // #nosec G115 -- This conversion is safe indefinitely
+		Timestamp:        timestamp,
 		Nonce:            pubEvent.Nonce,
 		Sequence:         pubEvent.Seq,
 		EmitterChain:     vaa.ChainIDNear,
-		EmitterAddress:   a,
+		EmitterAddress:   emitterDigestAddr,
 		Payload:          pl,
 		ConsistencyLevel: 0,
 		IsReobservation:  job.isReobservation,
+		Unreliable:       false,
 	}
 
 	if job.isReobservation {
@@ -254,7 +260,7 @@ func (e *Watcher) processWormholeLog(logger *zap.Logger, _ context.Context, job 
 	// tell everyone about it
 	job.hasWormholeMsg = true
 
-	e.eventChan <- EVENT_NEAR_MESSAGE_CONFIRMED //nolint:channelcheck // Only pauses this watcher
+	common.WriteToChannelWithoutBlocking(e.eventChan, EVENT_NEAR_MESSAGE_CONFIRMED, "near_event_chan") // Non-blocking: eventChan is buffered (cap 10) and metrics-only, so dropping an event is preferable to stalling the watcher.
 
 	logger.Info("message observed",
 		zap.String("log_msg_type", "wormhole_event_success"),
@@ -268,7 +274,7 @@ func (e *Watcher) processWormholeLog(logger *zap.Logger, _ context.Context, job 
 		zap.Uint8("consistency_level", observation.ConsistencyLevel),
 	)
 
-	e.msgC <- observation //nolint:channelcheck // The channel to the processor is buffered and shared across chains, if it backs up we should stop processing new observations
+	e.msgC <- observation // Note on channel capacity: The channel to the processor is buffered and shared across chains, if it backs up we should stop processing new observations
 
 	return nil
 }

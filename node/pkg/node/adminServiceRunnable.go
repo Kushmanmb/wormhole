@@ -1,29 +1,23 @@
 package node
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
-	"time"
 
 	"github.com/certusone/wormhole/node/pkg/adminrpc"
 	"github.com/certusone/wormhole/node/pkg/common"
 	guardianDB "github.com/certusone/wormhole/node/pkg/db"
 	"github.com/certusone/wormhole/node/pkg/governor"
-	"github.com/certusone/wormhole/node/pkg/guardiansigner"
+	"github.com/certusone/wormhole/node/pkg/manager"
 	"github.com/certusone/wormhole/node/pkg/notary"
 	gossipv1 "github.com/certusone/wormhole/node/pkg/proto/gossip/v1"
 	nodev1 "github.com/certusone/wormhole/node/pkg/proto/node/v1"
 	publicrpcv1 "github.com/certusone/wormhole/node/pkg/proto/publicrpc/v1"
 	"github.com/certusone/wormhole/node/pkg/publicrpc"
 	"github.com/certusone/wormhole/node/pkg/supervisor"
-	"github.com/certusone/wormhole/node/pkg/watchers/evm/connectors"
 	"github.com/certusone/wormhole/node/pkg/watchers/interfaces"
 	"go.uber.org/zap"
-
-	ethcommon "github.com/ethereum/go-ethereum/common"
-	ethcrypto "github.com/ethereum/go-ethereum/crypto"
 )
 
 func adminServiceRunnable(
@@ -32,15 +26,14 @@ func adminServiceRunnable(
 	injectC chan<- *common.MessagePublication,
 	signedInC chan<- *gossipv1.SignedVAAWithQuorum,
 	obsvReqSendC chan<- *gossipv1.ObservationRequest,
+	delegateSigBroadcastSendC chan<- []byte,
 	db *guardianDB.Database,
 	gst *common.GuardianSetState,
 	gov *governor.ChainGovernor,
 	notary *notary.Notary,
-	guardianSigner guardiansigner.GuardianSigner,
-	ethRpc *string,
-	ethContract *string,
 	rpcMap map[string]string,
 	reobservers interfaces.Reobservers,
+	managerSvc *manager.ManagerService,
 ) (supervisor.Runnable, error) {
 	// Delete existing UNIX socket, if present.
 	fi, err := os.Stat(socketPath)
@@ -73,34 +66,20 @@ func adminServiceRunnable(
 
 	logger.Info("admin server listening on", zap.String("path", socketPath))
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-	defer cancel()
-
-	var evmConnector connectors.Connector
-	if ethRpc != nil && ethContract != nil {
-		contract := ethcommon.HexToAddress(*ethContract)
-		evmConnector, err = connectors.NewEthereumBaseConnector(ctx, "eth", *ethRpc, contract, nil, logger)
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to ethereum")
-		}
-	}
-
 	nodeService := adminrpc.NewPrivService(
 		db,
 		injectC,
 		obsvReqSendC,
+		delegateSigBroadcastSendC,
 		logger.Named("adminservice"),
 		signedInC,
 		gov,
 		notary,
-		evmConnector,
-		guardianSigner,
-		ethcrypto.PubkeyToAddress(guardianSigner.PublicKey(ctx)),
 		rpcMap,
 		reobservers,
 	)
 
-	publicrpcService := publicrpc.NewPublicrpcServer(logger, db, gst, gov)
+	publicrpcService := publicrpc.NewPublicrpcServer(logger, db, gst, gov, managerSvc)
 
 	grpcServer := common.NewInstrumentedGRPCServer(logger, common.GrpcLogDetailMinimal)
 	nodev1.RegisterNodePrivilegedServiceServer(grpcServer, nodeService)

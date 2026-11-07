@@ -50,6 +50,9 @@ export const submit = async (
           break;
         case "RecoverChainId":
           throw new Error("RecoverChainId not supported on sei");
+        case "TransferFees":
+          console.log("Transferring core bridge fees");
+          break;
         default:
           impossible(payload);
       }
@@ -113,6 +116,8 @@ export const submit = async (
         case "AttestMeta":
           console.log("Creating wrapped token");
           break;
+        case "SetPauserAddresses":
+          throw new Error("SetPauserAddresses not supported on sei");
         case "TransferWithPayload":
           throw Error("Can't complete payload 3 transfer from CLI");
         default:
