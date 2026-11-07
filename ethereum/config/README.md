@@ -1,13 +1,6 @@
 # Token Distribution System
 
-This directory contains the configuration and documentation for the automated token distribution system.
-
-## Overview
-
-The token distribution system allows authorized owners to distribute tokens through:
-1. Manual execution using Foundry scripts
-2. Automated daily execution via GitHub Actions
-3. Manual triggering through GitHub Actions UI
+This directory contains example configuration for the fork’s experimental Foundry distribution script. The JSON file is a reference for manual configuration. GitHub Actions distribution has been retired. Keep signing keys out of CI.
 
 ## Authorized Owners
 
@@ -79,39 +72,15 @@ forge script forge-scripts/DistributeTokens.s.sol:DistributeTokens \
   --broadcast
 ```
 
-### Automated Distribution (GitHub Actions)
-
-#### Daily Scheduled Distribution
-
-The workflow runs automatically every day at 00:00 UTC. To enable:
-
-1. Configure repository secrets:
-   - `RPC_URL`: Ethereum RPC endpoint
-   - `DEPLOYER_PRIVATE_KEY`: Private key of authorized owner
-
-2. Update token address and recipients in the workflow file or config
-
-#### Manual Trigger
-
-1. Go to GitHub Actions tab
-2. Select "Daily Token Distribution" workflow
-3. Click "Run workflow"
-4. Fill in parameters:
-   - Token contract address
-   - Recipients (comma-separated)
-   - Amounts in wei (comma-separated)
-   - Dry run option (recommended for testing)
-
 ## Security Considerations
 
 1. **Private Key Management**: 
    - Never commit private keys to the repository
-   - Use GitHub Secrets for sensitive data
    - Consider using a hardware wallet or multi-sig for production
 
 2. **Owner Verification**:
    - The script verifies the caller is an authorized owner
-   - Only addresses listed in the constants can distribute tokens
+   - The token contract enforces its own mint permissions
 
 3. **Safety Limits**:
    - Maximum single distribution: 100 tokens

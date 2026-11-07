@@ -2,7 +2,7 @@
 
 ## Overview
 
-This guide provides step-by-step instructions for deploying and configuring the token distribution system with owner permissions for Kushmanmb, yaketh.eth, and kushmanmb.eth.
+This guide describes local testing of the fork’s experimental token distribution script. GitHub Actions distribution has been retired. Keep signing keys out of CI.
 
 ## Prerequisites
 
@@ -129,82 +129,9 @@ forge script forge-scripts/DistributeTokens.s.sol:DistributeTokens \
 
 Verify the transaction on testnet block explorer.
 
-## Step 4: Configure GitHub Secrets
+## Step 4: Monitoring and Maintenance
 
-For automated distribution via GitHub Actions:
-
-1. Go to repository Settings → Secrets and variables → Actions
-2. Add the following secrets:
-
-   - **RPC_URL**: Your Ethereum RPC endpoint
-     ```
-     Name: RPC_URL
-     Value: https://mainnet.infura.io/v3/YOUR_PROJECT_ID
-     ```
-
-   - **DEPLOYER_PRIVATE_KEY**: Private key of authorized owner
-     ```
-     Name: DEPLOYER_PRIVATE_KEY
-     Value: 0x1234567890abcdef...
-     ```
-
-   ⚠️ **Security Warning**: For production, use a dedicated deployment wallet or hardware wallet integration.
-
-## Step 5: Test GitHub Actions Workflow
-
-### 5.1 Manual Trigger (Dry Run)
-
-1. Go to Actions tab in GitHub
-2. Select "Daily Token Distribution" workflow
-3. Click "Run workflow"
-4. Fill in:
-   - Token Address: `<YOUR_TOKEN_ADDRESS>`
-   - Recipients: `0xAddress1,0xAddress2`
-   - Amounts: `1000000000000000000,2000000000000000000`
-   - Dry Run: `true` ✓
-
-### 5.2 Verify Workflow Execution
-
-Check the workflow logs to ensure:
-- Configuration loads correctly
-- Script compiles successfully
-- Dry run validates inputs
-
-### 5.3 Execute Live Distribution (Manual)
-
-Once verified, run with:
-- Dry Run: `false`
-
-Monitor the transaction on Etherscan.
-
-## Step 6: Configure Scheduled Distribution
-
-The workflow is configured to run daily at 00:00 UTC. To customize:
-
-Edit `.github/workflows/token-distribution.yml`:
-
-```yaml
-schedule:
-  - cron: '0 0 * * *'  # Daily at midnight UTC
-  # - cron: '0 */12 * * *'  # Every 12 hours
-  # - cron: '0 0 * * 1'  # Every Monday
-```
-
-## Step 7: Monitoring and Maintenance
-
-### Daily Checks
-
-1. **Verify Workflow Runs**
-   - Check GitHub Actions for daily execution logs
-   - Review transaction confirmations
-
-2. **Monitor Token Supply**
-   - Track total distributed tokens
-   - Ensure within safety limits
-
-3. **Review Recipients**
-   - Verify distribution to correct addresses
-   - Update recipient list as needed
+Record and verify any manually submitted transactions using the block explorer for the selected chain. Check the token supply and recipient addresses against the intended distribution.
 
 ### Troubleshooting
 
@@ -229,7 +156,6 @@ schedule:
 
 3. **Audit Trail**
    - Keep logs of all distributions
-   - Review GitHub Actions run history
 
 4. **Emergency Procedures**
    - Document process to pause distributions
@@ -247,10 +173,8 @@ Before going to production:
 - [ ] ENS names resolved to addresses
 - [ ] Addresses updated in config and script
 - [ ] Tested on testnet successfully
-- [ ] GitHub secrets configured
 - [ ] Dry run executed without errors
 - [ ] Manual distribution tested
-- [ ] Scheduled cron verified
 - [ ] Monitoring alerts set up
 - [ ] Emergency pause procedure documented
 - [ ] Backup owner keys secured
@@ -260,8 +184,7 @@ Before going to production:
 
 For issues or questions:
 1. Check the README in `ethereum/config/`
-2. Review workflow logs in GitHub Actions
-3. Open an issue in the repository
+2. Open an issue in the repository
 
 ## Appendix: Useful Commands
 
