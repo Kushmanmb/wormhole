@@ -68,12 +68,12 @@ type NodePrivilegedServiceClient interface {
 	NotaryListBlackholedMessages(ctx context.Context, in *NotaryListBlackholedMessagesRequest, opts ...grpc.CallOption) (*NotaryListBlackholedMessagesResponse, error)
 	// PurgePythNetVaas deletes PythNet VAAs from the database that are more than the specified number of days old.
 	PurgePythNetVaas(ctx context.Context, in *PurgePythNetVaasRequest, opts ...grpc.CallOption) (*PurgePythNetVaasResponse, error)
-	// SignExistingVAA signs an existing VAA for a new guardian set using the local guardian key.
-	SignExistingVAA(ctx context.Context, in *SignExistingVAARequest, opts ...grpc.CallOption) (*SignExistingVAAResponse, error)
 	// DumpRPCs returns the RPCs being used by the guardian
 	DumpRPCs(ctx context.Context, in *DumpRPCsRequest, opts ...grpc.CallOption) (*DumpRPCsResponse, error)
 	// GetMissingVAAs returns the VAAs from a cloud function that need to be reobserved.
 	GetAndObserveMissingVAAs(ctx context.Context, in *GetAndObserveMissingVAAsRequest, opts ...grpc.CallOption) (*GetAndObserveMissingVAAsResponse, error)
+	// BroadcastDelegateSignatures fetches delegate observations from wormholescan and broadcasts them.
+	BroadcastDelegateSignatures(ctx context.Context, in *BroadcastDelegateSignaturesRequest, opts ...grpc.CallOption) (*BroadcastDelegateSignaturesResponse, error)
 }
 
 type nodePrivilegedServiceClient struct {
@@ -264,15 +264,6 @@ func (c *nodePrivilegedServiceClient) PurgePythNetVaas(ctx context.Context, in *
 	return out, nil
 }
 
-func (c *nodePrivilegedServiceClient) SignExistingVAA(ctx context.Context, in *SignExistingVAARequest, opts ...grpc.CallOption) (*SignExistingVAAResponse, error) {
-	out := new(SignExistingVAAResponse)
-	err := c.cc.Invoke(ctx, "/node.v1.NodePrivilegedService/SignExistingVAA", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *nodePrivilegedServiceClient) DumpRPCs(ctx context.Context, in *DumpRPCsRequest, opts ...grpc.CallOption) (*DumpRPCsResponse, error) {
 	out := new(DumpRPCsResponse)
 	err := c.cc.Invoke(ctx, "/node.v1.NodePrivilegedService/DumpRPCs", in, out, opts...)
@@ -285,6 +276,15 @@ func (c *nodePrivilegedServiceClient) DumpRPCs(ctx context.Context, in *DumpRPCs
 func (c *nodePrivilegedServiceClient) GetAndObserveMissingVAAs(ctx context.Context, in *GetAndObserveMissingVAAsRequest, opts ...grpc.CallOption) (*GetAndObserveMissingVAAsResponse, error) {
 	out := new(GetAndObserveMissingVAAsResponse)
 	err := c.cc.Invoke(ctx, "/node.v1.NodePrivilegedService/GetAndObserveMissingVAAs", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *nodePrivilegedServiceClient) BroadcastDelegateSignatures(ctx context.Context, in *BroadcastDelegateSignaturesRequest, opts ...grpc.CallOption) (*BroadcastDelegateSignaturesResponse, error) {
+	out := new(BroadcastDelegateSignaturesResponse)
+	err := c.cc.Invoke(ctx, "/node.v1.NodePrivilegedService/BroadcastDelegateSignatures", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -345,12 +345,12 @@ type NodePrivilegedServiceServer interface {
 	NotaryListBlackholedMessages(context.Context, *NotaryListBlackholedMessagesRequest) (*NotaryListBlackholedMessagesResponse, error)
 	// PurgePythNetVaas deletes PythNet VAAs from the database that are more than the specified number of days old.
 	PurgePythNetVaas(context.Context, *PurgePythNetVaasRequest) (*PurgePythNetVaasResponse, error)
-	// SignExistingVAA signs an existing VAA for a new guardian set using the local guardian key.
-	SignExistingVAA(context.Context, *SignExistingVAARequest) (*SignExistingVAAResponse, error)
 	// DumpRPCs returns the RPCs being used by the guardian
 	DumpRPCs(context.Context, *DumpRPCsRequest) (*DumpRPCsResponse, error)
 	// GetMissingVAAs returns the VAAs from a cloud function that need to be reobserved.
 	GetAndObserveMissingVAAs(context.Context, *GetAndObserveMissingVAAsRequest) (*GetAndObserveMissingVAAsResponse, error)
+	// BroadcastDelegateSignatures fetches delegate observations from wormholescan and broadcasts them.
+	BroadcastDelegateSignatures(context.Context, *BroadcastDelegateSignaturesRequest) (*BroadcastDelegateSignaturesResponse, error)
 	mustEmbedUnimplementedNodePrivilegedServiceServer()
 }
 
@@ -418,14 +418,14 @@ func (UnimplementedNodePrivilegedServiceServer) NotaryListBlackholedMessages(con
 func (UnimplementedNodePrivilegedServiceServer) PurgePythNetVaas(context.Context, *PurgePythNetVaasRequest) (*PurgePythNetVaasResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PurgePythNetVaas not implemented")
 }
-func (UnimplementedNodePrivilegedServiceServer) SignExistingVAA(context.Context, *SignExistingVAARequest) (*SignExistingVAAResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SignExistingVAA not implemented")
-}
 func (UnimplementedNodePrivilegedServiceServer) DumpRPCs(context.Context, *DumpRPCsRequest) (*DumpRPCsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DumpRPCs not implemented")
 }
 func (UnimplementedNodePrivilegedServiceServer) GetAndObserveMissingVAAs(context.Context, *GetAndObserveMissingVAAsRequest) (*GetAndObserveMissingVAAsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetAndObserveMissingVAAs not implemented")
+}
+func (UnimplementedNodePrivilegedServiceServer) BroadcastDelegateSignatures(context.Context, *BroadcastDelegateSignaturesRequest) (*BroadcastDelegateSignaturesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method BroadcastDelegateSignatures not implemented")
 }
 func (UnimplementedNodePrivilegedServiceServer) mustEmbedUnimplementedNodePrivilegedServiceServer() {}
 
@@ -800,24 +800,6 @@ func _NodePrivilegedService_PurgePythNetVaas_Handler(srv interface{}, ctx contex
 	return interceptor(ctx, in, info, handler)
 }
 
-func _NodePrivilegedService_SignExistingVAA_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SignExistingVAARequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(NodePrivilegedServiceServer).SignExistingVAA(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/node.v1.NodePrivilegedService/SignExistingVAA",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(NodePrivilegedServiceServer).SignExistingVAA(ctx, req.(*SignExistingVAARequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _NodePrivilegedService_DumpRPCs_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DumpRPCsRequest)
 	if err := dec(in); err != nil {
@@ -850,6 +832,24 @@ func _NodePrivilegedService_GetAndObserveMissingVAAs_Handler(srv interface{}, ct
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(NodePrivilegedServiceServer).GetAndObserveMissingVAAs(ctx, req.(*GetAndObserveMissingVAAsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _NodePrivilegedService_BroadcastDelegateSignatures_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(BroadcastDelegateSignaturesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(NodePrivilegedServiceServer).BroadcastDelegateSignatures(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/node.v1.NodePrivilegedService/BroadcastDelegateSignatures",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(NodePrivilegedServiceServer).BroadcastDelegateSignatures(ctx, req.(*BroadcastDelegateSignaturesRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -942,16 +942,16 @@ var NodePrivilegedService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _NodePrivilegedService_PurgePythNetVaas_Handler,
 		},
 		{
-			MethodName: "SignExistingVAA",
-			Handler:    _NodePrivilegedService_SignExistingVAA_Handler,
-		},
-		{
 			MethodName: "DumpRPCs",
 			Handler:    _NodePrivilegedService_DumpRPCs_Handler,
 		},
 		{
 			MethodName: "GetAndObserveMissingVAAs",
 			Handler:    _NodePrivilegedService_GetAndObserveMissingVAAs_Handler,
+		},
+		{
+			MethodName: "BroadcastDelegateSignatures",
+			Handler:    _NodePrivilegedService_BroadcastDelegateSignatures_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

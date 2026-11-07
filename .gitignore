@@ -60,6 +60,7 @@ devnet-consts.json
 sui.log.*
 sui/examples/wrapped_coin
 *.prof
+/coverage-check
 
 # Security scanning
 .secrets.baseline
@@ -67,3 +68,4 @@ gitleaks-report.json
 
 # Only used for internal testing
 *.testnet.yaml
+coverage.txt

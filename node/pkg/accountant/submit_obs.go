@@ -22,8 +22,8 @@ import (
 )
 
 const (
-	batchSize    = 10
-	batchTimeout = 100 * time.Millisecond
+	DefaultSubmitObservationBatchSize = 100             // Observations per batch (limited by wasm contract input size of 64KB)
+	batchTimeout                      = 2 * time.Second // Time to collect observations before submitting
 )
 
 // baseWorker is the entry point for the base accountant worker.
@@ -68,7 +68,7 @@ func (acct *Accountant) handleBatch(ctx context.Context, subChan chan *common.Me
 	ctx, cancel := context.WithTimeout(ctx, batchTimeout)
 	defer cancel()
 
-	msgs, err := common.ReadFromChannelWithTimeout[*common.MessagePublication](ctx, subChan, batchSize)
+	msgs, err := common.ReadFromChannelWithTimeout[*common.MessagePublication](ctx, subChan, acct.submitObservationBatchSize)
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("failed to read messages from channel for %s: %w", tag, err)
 	}
@@ -434,8 +434,8 @@ func GetObservationResponses(txResp *sdktx.BroadcastTxResponse) (map[string]Obse
 	}
 
 	var msg sdktypes.TxMsgData
-	if err := msg.Unmarshal(data); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal data: %w", err)
+	if unmarshalErr := msg.Unmarshal(data); unmarshalErr != nil {
+		return nil, fmt.Errorf("failed to unmarshal data: %w", unmarshalErr)
 	}
 
 	if len(msg.Data) == 0 {
@@ -443,8 +443,8 @@ func GetObservationResponses(txResp *sdktx.BroadcastTxResponse) (map[string]Obse
 	}
 
 	var execContractResp wasmdtypes.MsgExecuteContractResponse
-	if err := execContractResp.Unmarshal(msg.Data[0].Data); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal ExecuteContractResponse: %w", err)
+	if unmarshalErr := execContractResp.Unmarshal(msg.Data[0].Data); unmarshalErr != nil {
+		return nil, fmt.Errorf("failed to unmarshal ExecuteContractResponse: %w", unmarshalErr)
 	}
 
 	var responses ObservationResponses

@@ -12,14 +12,10 @@ import (
 	"math/big"
 	"math/rand"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/certusone/wormhole/node/pkg/guardiansigner"
-	"github.com/certusone/wormhole/node/pkg/watchers/evm/connectors"
 	"github.com/certusone/wormhole/node/pkg/watchers/interfaces"
 	"github.com/holiman/uint256"
 	"github.com/prometheus/client_golang/prometheus"
@@ -34,6 +30,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/certusone/wormhole/node/pkg/common"
 	nodev1 "github.com/certusone/wormhole/node/pkg/proto/node/v1"
@@ -42,8 +39,7 @@ import (
 	sdktypes "github.com/cosmos/cosmos-sdk/types"
 )
 
-const maxResetReleaseTimerDays = 30
-const ecdsaSignatureLength = 65
+const maxResetReleaseTimerDays = 90
 
 var (
 	ErrNotaryNotEnabled = errors.New("notary is not enabled")
@@ -60,49 +56,42 @@ var (
 
 type nodePrivilegedService struct {
 	nodev1.UnimplementedNodePrivilegedServiceServer
-	db              *guardianDB.Database
-	injectC         chan<- *common.MessagePublication
-	obsvReqSendC    chan<- *gossipv1.ObservationRequest
-	logger          *zap.Logger
-	signedInC       chan<- *gossipv1.SignedVAAWithQuorum
-	governor        *governor.ChainGovernor
-	notary          *notary.Notary
-	evmConnector    connectors.Connector
-	gsCache         sync.Map
-	guardianSigner  guardiansigner.GuardianSigner
-	guardianAddress ethcommon.Address
-	rpcMap          map[string]string
-	reobservers     interfaces.Reobservers
+	db                        *guardianDB.Database
+	injectC                   chan<- *common.MessagePublication
+	obsvReqSendC              chan<- *gossipv1.ObservationRequest
+	delegateSigBroadcastSendC chan<- []byte
+	logger                    *zap.Logger
+	signedInC                 chan<- *gossipv1.SignedVAAWithQuorum
+	governor                  *governor.ChainGovernor
+	notary                    *notary.Notary
+	rpcMap                    map[string]string
+	reobservers               interfaces.Reobservers
 }
 
 func NewPrivService(
 	db *guardianDB.Database,
 	injectC chan<- *common.MessagePublication,
 	obsvReqSendC chan<- *gossipv1.ObservationRequest,
+	delegateSigBroadcastSendC chan<- []byte,
 	logger *zap.Logger,
 	signedInC chan<- *gossipv1.SignedVAAWithQuorum,
 	gov *governor.ChainGovernor,
 	notary *notary.Notary,
-	evmConnector connectors.Connector,
-	guardianSigner guardiansigner.GuardianSigner,
-	guardianAddress ethcommon.Address,
 	rpcMap map[string]string,
 	reobservers interfaces.Reobservers,
 
 ) *nodePrivilegedService {
 	return &nodePrivilegedService{
-		db:              db,
-		injectC:         injectC,
-		obsvReqSendC:    obsvReqSendC,
-		logger:          logger,
-		signedInC:       signedInC,
-		governor:        gov,
-		notary:          notary,
-		evmConnector:    evmConnector,
-		guardianSigner:  guardianSigner,
-		guardianAddress: guardianAddress,
-		rpcMap:          rpcMap,
-		reobservers:     reobservers,
+		db:                        db,
+		injectC:                   injectC,
+		obsvReqSendC:              obsvReqSendC,
+		delegateSigBroadcastSendC: delegateSigBroadcastSendC,
+		logger:                    logger,
+		signedInC:                 signedInC,
+		governor:                  gov,
+		notary:                    notary,
+		rpcMap:                    rpcMap,
+		reobservers:               reobservers,
 	}
 }
 
@@ -304,6 +293,59 @@ func accountantModifyBalance(req *nodev1.AccountantModifyBalance, timestamp time
 
 	v := vaa.CreateGovernanceVAA(timestamp, nonce, sequence, guardianSetIndex, body)
 	return v, nil
+}
+
+// tokenBridgeSetPauserAddresses converts a nodev1.BridgeSetPauserAddresses message to its canonical VAA representation.
+// Returns an error if the data is invalid.
+func tokenBridgeSetPauserAddresses(req *nodev1.BridgeSetPauserAddresses, timestamp time.Time, guardianSetIndex uint32, nonce uint32, sequence uint64) (*vaa.VAA, error) {
+	if req.Module != vaa.TokenBridgeModuleName {
+		return nil, fmt.Errorf("unknown module %q (expected %q)", req.Module, vaa.TokenBridgeModuleName)
+	}
+
+	chainID, err := vaa.KnownChainIDFromNumber[uint32](req.TargetChainId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert target_chain_id: %w", err)
+	}
+
+	pauser, err := decodePauserAddress("pauser", req.Pauser)
+	if err != nil {
+		return nil, err
+	}
+	freezer, err := decodePauserAddress("freezer", req.Freezer)
+	if err != nil {
+		return nil, err
+	}
+	unpauser, err := decodePauserAddress("unpauser", req.Unpauser)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := vaa.BodyTokenBridgeSetPauserAddresses{
+		Module:        req.Module,
+		TargetChainID: chainID,
+		Pauser:        pauser,
+		Freezer:       freezer,
+		Unpauser:      unpauser,
+	}.Serialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize governance body: %w", err)
+	}
+
+	return vaa.CreateGovernanceVAA(timestamp, nonce, sequence, guardianSetIndex, body), nil
+}
+
+// decodePauserAddress decodes a hex pauser/freezer/unpauser address string. An
+// empty string decodes to an empty slice, which the serializer encodes as a
+// zero-length address - i.e. the role being unassigned.
+func decodePauserAddress(field, s string) ([]byte, error) {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s address encoding (expected hex): %w", field, err)
+	}
+	if len(b) > math.MaxUint8 {
+		return nil, fmt.Errorf("invalid %s address: %d bytes exceeds max %d", field, len(b), math.MaxUint8)
+	}
+	return b, nil
 }
 
 // tokenBridgeUpgradeContract converts a nodev1.TokenBridgeRegisterChain message to its canonical VAA representation.
@@ -702,6 +744,49 @@ func coreBridgeSetMessageFeeToVaa(req *nodev1.CoreBridgeSetMessageFee, timestamp
 	return v, nil
 }
 
+func coreBridgeTransferFeesToVaa(req *nodev1.CoreBridgeTransferFees, timestamp time.Time, guardianSetIndex uint32, nonce uint32, sequence uint64) (*vaa.VAA, error) {
+	chainId, err := vaa.KnownChainIDFromNumber[uint32](req.ChainId)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert chain id: %w", err)
+	}
+
+	amountBig, ok := new(big.Int).SetString(req.Amount, 10)
+	if !ok {
+		return nil, errors.New("invalid amount")
+	}
+	if amountBig.Sign() < 0 {
+		return nil, errors.New("amount cannot be negative")
+	}
+	if amountBig.Sign() == 0 {
+		return nil, errors.New("amount must be non-zero")
+	}
+	amount, overflow := uint256.FromBig(amountBig)
+	if overflow {
+		return nil, errors.New("amount overflow")
+	}
+
+	recipientBytes, err := hex.DecodeString(req.Recipient)
+	if err != nil || len(recipientBytes) != 32 {
+		return nil, errors.New("invalid recipient (expected 32-byte hex address)")
+	}
+	var recipient vaa.Address
+	copy(recipient[:], recipientBytes)
+	if recipient == (vaa.Address{}) {
+		return nil, errors.New("recipient must be non-zero")
+	}
+
+	body, err := vaa.BodyCoreBridgeTransferFees{
+		ChainID:   chainId,
+		Amount:    amount,
+		Recipient: recipient,
+	}.Serialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize governance body: %w", err)
+	}
+
+	return vaa.CreateGovernanceVAA(timestamp, nonce, sequence, guardianSetIndex, body), nil
+}
+
 func delegatedGuardiansConfigToVaa(req *nodev1.DelegatedGuardiansConfig, timestamp time.Time, guardianSetIndex uint32, nonce uint32, sequence uint64) (*vaa.VAA, error) {
 	var rawConfig map[string]struct {
 		Keys      []string `json:"keys"`
@@ -738,6 +823,31 @@ func delegatedGuardiansConfigToVaa(req *nodev1.DelegatedGuardiansConfig, timesta
 	body, err := vaa.BodyDelegatedGuardiansSetConfig{
 		ConfigIndex: configIndex,
 		Config:      configs,
+	}.Serialize()
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize governance body: %w", err)
+	}
+
+	v := vaa.CreateGovernanceVAA(timestamp, nonce, sequence, guardianSetIndex, body)
+	return v, nil
+}
+
+// delegatedManagerSetUpdateToVaa converts a nodev1.DelegatedManagerSetUpdate message to its canonical VAA representation.
+// Returns an error if the data is invalid.
+func delegatedManagerSetUpdateToVaa(req *nodev1.DelegatedManagerSetUpdate, timestamp time.Time, guardianSetIndex uint32, nonce uint32, sequence uint64) (*vaa.VAA, error) {
+	if req.ManagerChainId > math.MaxUint16 {
+		return nil, errors.New("invalid manager_chain_id")
+	}
+
+	managerSetBytes, err := hex.DecodeString(req.ManagerSet)
+	if err != nil {
+		return nil, fmt.Errorf("invalid manager_set encoding (expected hex): %w", err)
+	}
+
+	body, err := vaa.BodyManagerSetUpdate{
+		ManagerChainID:     vaa.ChainID(req.ManagerChainId),
+		NewManagerSetIndex: req.ManagerSetIndex,
+		NewManagerSet:      managerSetBytes,
 	}.Serialize()
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize governance body: %w", err)
@@ -808,6 +918,41 @@ func solanaCallToVaa(solanaCall *nodev1.SolanaCall, timestamp time.Time, guardia
 	return v, nil
 }
 
+func suiCallToVaa(suiCall *nodev1.SuiCall, timestamp time.Time, guardianSetIndex, nonce uint32, sequence uint64) (*vaa.VAA, error) {
+	govContractStr := strings.TrimPrefix(suiCall.GovernanceContract, "0x")
+	address, err := hex.DecodeString(govContractStr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode governance contract address: %w", err)
+	}
+	if len(address) != 32 {
+		return nil, errors.New("invalid governance contract address length (expected 32 bytes)")
+	}
+
+	var governanceContract [32]byte
+	copy(governanceContract[:], address)
+
+	callData, err := hex.DecodeString(suiCall.EncodedCall)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode call data: %w", err)
+	}
+	if suiCall.ChainId > math.MaxUint16 {
+		return nil, fmt.Errorf("chain id exceeds max uint16: %v", suiCall.ChainId)
+	}
+
+	body, err := vaa.BodyGeneralPurposeGovernanceSui{
+		ChainID:            vaa.ChainID(suiCall.ChainId),
+		GovernanceContract: governanceContract,
+		Payload:            callData,
+	}.Serialize()
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to serialize governance body: %w", err)
+	}
+
+	v := vaa.CreateGovernanceVAA(timestamp, nonce, sequence, guardianSetIndex, body)
+	return v, nil
+}
+
 func GovMsgToVaa(message *nodev1.GovernanceMessage, currentSetIndex uint32, timestamp time.Time) (*vaa.VAA, error) {
 	var (
 		v   *vaa.VAA
@@ -823,6 +968,8 @@ func GovMsgToVaa(message *nodev1.GovernanceMessage, currentSetIndex uint32, time
 		v, err = tokenBridgeRegisterChain(payload.BridgeRegisterChain, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	case *nodev1.GovernanceMessage_BridgeContractUpgrade:
 		v, err = tokenBridgeUpgradeContract(payload.BridgeContractUpgrade, timestamp, currentSetIndex, message.Nonce, message.Sequence)
+	case *nodev1.GovernanceMessage_BridgeSetPauserAddresses:
+		v, err = tokenBridgeSetPauserAddresses(payload.BridgeSetPauserAddresses, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	case *nodev1.GovernanceMessage_RecoverChainId:
 		v, err = recoverChainId(payload.RecoverChainId, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	case *nodev1.GovernanceMessage_AccountantModifyBalance:
@@ -855,10 +1002,16 @@ func GovMsgToVaa(message *nodev1.GovernanceMessage, currentSetIndex uint32, time
 		v, err = evmCallToVaa(payload.EvmCall, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	case *nodev1.GovernanceMessage_SolanaCall:
 		v, err = solanaCallToVaa(payload.SolanaCall, timestamp, currentSetIndex, message.Nonce, message.Sequence)
+	case *nodev1.GovernanceMessage_SuiCall:
+		v, err = suiCallToVaa(payload.SuiCall, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	case *nodev1.GovernanceMessage_CoreBridgeSetMessageFee:
 		v, err = coreBridgeSetMessageFeeToVaa(payload.CoreBridgeSetMessageFee, timestamp, currentSetIndex, message.Nonce, message.Sequence)
+	case *nodev1.GovernanceMessage_CoreBridgeTransferFees:
+		v, err = coreBridgeTransferFeesToVaa(payload.CoreBridgeTransferFees, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	case *nodev1.GovernanceMessage_DelegatedGuardiansConfig:
 		v, err = delegatedGuardiansConfigToVaa(payload.DelegatedGuardiansConfig, timestamp, currentSetIndex, message.Nonce, message.Sequence)
+	case *nodev1.GovernanceMessage_DelegatedManagerSetUpdate:
+		v, err = delegatedManagerSetUpdateToVaa(payload.DelegatedManagerSetUpdate, timestamp, currentSetIndex, message.Nonce, message.Sequence)
 	default:
 		err = fmt.Errorf("unsupported VAA type: %T", payload)
 	}
@@ -904,6 +1057,7 @@ func (s *nodePrivilegedService) InjectGovernanceVAA(ctx context.Context, req *no
 			EmitterChain:     v.EmitterChain,
 			EmitterAddress:   v.EmitterAddress,
 			Payload:          v.Payload,
+			IsReobservation:  false,
 			Unreliable:       false,
 		}
 
@@ -938,6 +1092,7 @@ func (s *nodePrivilegedService) fetchMissing(
 			return false, fmt.Errorf("failed to create request: %w", err)
 		}
 
+		// #nosec G704 -- Admin RPC: BackfillNodes from authorized admin request
 		resp, err := c.Do(req)
 		if err != nil {
 			s.logger.Warn("failed to fetch missing VAA",
@@ -1353,139 +1508,6 @@ func (s *nodePrivilegedService) PurgePythNetVaas(ctx context.Context, req *nodev
 	}, nil
 }
 
-func (s *nodePrivilegedService) SignExistingVAA(ctx context.Context, req *nodev1.SignExistingVAARequest) (*nodev1.SignExistingVAAResponse, error) {
-	v, err := vaa.Unmarshal(req.Vaa)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal VAA: %w", err)
-	}
-
-	if req.NewGuardianSetIndex <= v.GuardianSetIndex {
-		return nil, errors.New("new guardian set index must be higher than provided VAA")
-	}
-
-	if s.evmConnector == nil {
-		return nil, errors.New("the node needs to have an Ethereum connection configured to sign existing VAAs")
-	}
-
-	var gs *common.GuardianSet
-	if cachedGs, exists := s.gsCache.Load(v.GuardianSetIndex); exists {
-		var ok bool
-		gs, ok = cachedGs.(*common.GuardianSet)
-		if !ok {
-			return nil, fmt.Errorf("internal error")
-		}
-	} else {
-		evmGs, err := s.evmConnector.GetGuardianSet(ctx, v.GuardianSetIndex)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load guardian set [%d]: %w", v.GuardianSetIndex, err)
-		}
-		gs = &common.GuardianSet{
-			Keys:  evmGs.Keys,
-			Index: v.GuardianSetIndex,
-		}
-		s.gsCache.Store(v.GuardianSetIndex, gs)
-	}
-
-	if slices.Index(gs.Keys, s.guardianAddress) != -1 {
-		return nil, fmt.Errorf("local guardian is already on the old set")
-	}
-
-	// Verify VAA
-	err = v.Verify(gs.Keys)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify existing VAA: %w", err)
-	}
-
-	if len(req.NewGuardianAddrs) > 255 {
-		return nil, errors.New("new guardian set has too many guardians")
-	}
-	newGS := make([]ethcommon.Address, len(req.NewGuardianAddrs))
-	for i, guardianString := range req.NewGuardianAddrs {
-		guardianAddress := ethcommon.HexToAddress(guardianString)
-		newGS[i] = guardianAddress
-	}
-
-	// Make sure there are no duplicates. Compact needs to take a sorted slice to remove all duplicates.
-	newGSSorted := slices.Clone(newGS)
-	slices.SortFunc(newGSSorted, func(a, b ethcommon.Address) int {
-		return bytes.Compare(a[:], b[:])
-	})
-	newGsLen := len(newGSSorted)
-	if len(slices.Compact(newGSSorted)) != newGsLen {
-		return nil, fmt.Errorf("duplicate guardians in the guardian set")
-	}
-
-	localGuardianIndex := slices.Index(newGS, s.guardianAddress)
-	if localGuardianIndex == -1 {
-		return nil, fmt.Errorf("local guardian is not a member of the new guardian set")
-	}
-
-	newVAA := &vaa.VAA{
-		Version: v.Version,
-		// Set the new guardian set index
-		GuardianSetIndex: req.NewGuardianSetIndex,
-		// Signatures will be repopulated
-		Signatures:       nil,
-		Timestamp:        v.Timestamp,
-		Nonce:            v.Nonce,
-		Sequence:         v.Sequence,
-		ConsistencyLevel: v.ConsistencyLevel,
-		EmitterChain:     v.EmitterChain,
-		EmitterAddress:   v.EmitterAddress,
-		Payload:          v.Payload,
-	}
-
-	// Copy original VAA signatures
-	for _, sig := range v.Signatures {
-		signerAddress := gs.Keys[sig.Index]
-		newIndex := slices.Index(newGS, signerAddress)
-		// Guardian is not part of the new set
-		if newIndex == -1 {
-			continue
-		}
-		newVAA.Signatures = append(newVAA.Signatures, &vaa.Signature{
-			Index:     uint8(newIndex), // #nosec G115 -- The length of newGS is constrained to a uint8 above
-			Signature: sig.Signature,
-		})
-	}
-
-	// Add our own signature only if the new guardian set would reach quorum
-	if vaa.CalculateQuorum(len(newGS)) > len(newVAA.Signatures)+1 {
-		return nil, errors.New("cannot reach quorum on new guardian set with the local signature")
-	}
-
-	// Add local signature
-	sig, err := s.guardianSigner.Sign(ctx, v.SigningDigest().Bytes())
-	if err != nil {
-		panic(err)
-	}
-
-	signature := [ecdsaSignatureLength]byte{}
-	copy(signature[:], sig)
-
-	newVAA.Signatures = append(newVAA.Signatures, &vaa.Signature{
-		Index:     uint8(localGuardianIndex), // #nosec G115 -- The length of newGS is constrained to a uint8 above
-		Signature: signature,
-	})
-
-	// Sort VAA signatures by guardian ID
-	slices.SortFunc(newVAA.Signatures, func(a, b *vaa.Signature) int {
-		if a.Index < b.Index {
-			return -1
-		} else if a.Index > b.Index {
-			return 1
-		}
-		return 0
-	})
-
-	newVAABytes, err := newVAA.Marshal()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal new VAA: %w", err)
-	}
-
-	return &nodev1.SignExistingVAAResponse{Vaa: newVAABytes}, nil
-}
-
 func (s *nodePrivilegedService) DumpRPCs(ctx context.Context, req *nodev1.DumpRPCsRequest) (*nodev1.DumpRPCsResponse, error) {
 	return &nodev1.DumpRPCsResponse{
 		Response: s.rpcMap,
@@ -1497,24 +1519,21 @@ func (s *nodePrivilegedService) GetAndObserveMissingVAAs(ctx context.Context, re
 	url := req.GetUrl()
 	apiKey := req.GetApiKey()
 
-	// Create the body of the request
-	jsonBody := []byte(`{"apiKey": "` + apiKey + `"}`)
-	jsonBodyReader := bytes.NewReader(jsonBody)
-
-	// Create the actual request
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, jsonBodyReader)
+	// The API key identifies this Guardian to the endpoint, which returns the missing VAAs it is expected to observe.
+	// The request has no body.
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
 	if err != nil {
 		fmt.Printf("GetAndObserveMissingVAAs: could not create request: %s\n", err)
 		return nil, err
 	}
 
-	httpRequest.Header.Set("Content-Type", "application/json")
+	httpRequest.Header.Set("Authorization", "Bearer "+apiKey)
 
 	client := http.Client{
 		Timeout: 30 * time.Second,
 	}
 
-	// Call the cloud function to get the missing VAAs
+	// #nosec G704 -- Admin RPC: URL from authorized admin request
 	results, err := client.Do(httpRequest)
 	if err != nil {
 		fmt.Printf("GetAndObserveMissingVAAs: error making http request: %s\n", err)
@@ -1530,6 +1549,9 @@ func (s *nodePrivilegedService) GetAndObserveMissingVAAs(ctx context.Context, re
 		return nil, err
 	}
 	fmt.Printf("client: response body: %s\n", resBody)
+	if results.StatusCode < 200 || results.StatusCode > 299 {
+		return nil, fmt.Errorf("missing VAA endpoint returned %s: %s", results.Status, bytes.TrimSpace(resBody))
+	}
 	type MissingVAA struct {
 		Chain  int    `json:"chain"`
 		VaaKey string `json:"vaaKey"`
@@ -1590,6 +1612,8 @@ func (s *nodePrivilegedService) GetAndObserveMissingVAAs(ctx context.Context, re
 			continue
 		}
 		obsvReq.ChainId = uint32(missingVAA.Chain) // #nosec G115 -- This conversion is checked above
+		// Receiving guardians drop requests whose timestamp is more than 15 minutes from now (p2p.processSignedObservationRequest).
+		obsvReq.Timestamp = time.Now().UnixNano()
 		obsvReq.TxHash, err = hex.DecodeString(strings.TrimPrefix(missingVAA.Txhash, "0x"))
 		if err != nil {
 			obsvReq.TxHash, err = base58.Decode(missingVAA.Txhash)
@@ -1618,5 +1642,37 @@ func (s *nodePrivilegedService) GetAndObserveMissingVAAs(ctx context.Context, re
 	response += "\n" + errMsgs
 	return &nodev1.GetAndObserveMissingVAAsResponse{
 		Response: response,
+	}, nil
+}
+
+func (s *nodePrivilegedService) BroadcastDelegateSignatures(ctx context.Context, req *nodev1.BroadcastDelegateSignaturesRequest) (*nodev1.BroadcastDelegateSignaturesResponse, error) {
+	broadcast := req.GetBroadcast()
+	if broadcast == nil {
+		return nil, status.Error(codes.InvalidArgument, "broadcast is required")
+	}
+
+	if len(broadcast.Signatures) == 0 {
+		return nil, status.Error(codes.InvalidArgument, "broadcast must contain at least one signature")
+	}
+
+	broadcastBytes, err := proto.Marshal(broadcast)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to marshal broadcast: %v", err)
+	}
+
+	select {
+	case s.delegateSigBroadcastSendC <- broadcastBytes:
+		s.logger.Info("queued delegate signatures broadcast",
+			zap.Uint32("emitter_chain", broadcast.EmitterChain),
+			zap.Uint64("sequence", broadcast.Sequence),
+			zap.Int("num_signatures", len(broadcast.Signatures)),
+		)
+	default:
+		return nil, status.Error(codes.ResourceExhausted, "delegate signatures broadcast channel is full")
+	}
+
+	return &nodev1.BroadcastDelegateSignaturesResponse{
+		Response: fmt.Sprintf("successfully queued broadcast of %d delegate signatures for %d/%d",
+			len(broadcast.Signatures), broadcast.EmitterChain, broadcast.Sequence),
 	}, nil
 }

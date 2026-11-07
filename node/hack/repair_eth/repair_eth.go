@@ -37,16 +37,12 @@ var etherscanAPIMap = map[vaa.ChainID]string{
 	vaa.ChainIDBSC:       "https://api.bscscan.com/api",
 	vaa.ChainIDAvalanche: "https://api.snowtrace.io/api",
 	vaa.ChainIDPolygon:   "https://api.polygonscan.com/api",
-	vaa.ChainIDFantom:    "https://api.ftmscan.com/api",
 	// NOTE: Not sure what should be here for Klaytn, since they use: https://scope.klaytn.com/
 	vaa.ChainIDCelo:       "https://celoscan.xyz/api",
 	vaa.ChainIDMoonbeam:   "https://api-moonbeam.moonscan.io",
 	vaa.ChainIDArbitrum:   "https://api.arbiscan.io",
 	vaa.ChainIDOptimism:   "https://api-optimistic.etherscan.io",
 	vaa.ChainIDBase:       "https://api.basescan.org",
-	vaa.ChainIDScroll:     "https://api.scrollscan.com",
-	vaa.ChainIDMantle:     "https://api.mantlescan.xyz/",
-	vaa.ChainIDXLayer:     "", // TODO: Does X Layer have an etherscan API endpoint?
 	vaa.ChainIDBerachain:  "https://api.berascan.com/",
 	vaa.ChainIDSeiEVM:     "", // TODO: Does SeiEVM have an etherscan API endpoint?
 	vaa.ChainIDUnichain:   "https://api.uniscan.xyz/",
@@ -84,8 +80,8 @@ func usesBlockscout(chainId vaa.ChainID) bool {
 	return false
 }
 
-func getAdminClient(ctx context.Context, addr string) (*grpc.ClientConn, nodev1.NodePrivilegedServiceClient, error) {
-	conn, err := grpc.DialContext(ctx, fmt.Sprintf("unix:///%s", addr), grpc.WithTransportCredentials(insecure.NewCredentials()))
+func getAdminClient(addr string) (*grpc.ClientConn, nodev1.NodePrivilegedServiceClient, error) {
+	conn, err := grpc.NewClient(fmt.Sprintf("unix:///%s", addr), grpc.WithTransportCredentials(insecure.NewCredentials()))
 
 	if err != nil {
 		log.Fatalf("failed to connect to %s: %v", addr, err)
@@ -144,6 +140,7 @@ func getCurrentHeight(chainId vaa.ChainID, ctx context.Context, c *http.Client, 
 	}
 	req = addUserAgent(req)
 
+	// #nosec G704 -- Maintenance script calling hardcoded or config-provided explorer API
 	resp, err := c.Do(req.WithContext(ctx))
 	if err != nil {
 		return 0, fmt.Errorf("failed to get current height: %w", err)
@@ -188,6 +185,7 @@ func getLogs(chainId vaa.ChainID, ctx context.Context, c *http.Client, api, key,
 	}
 	req = addUserAgent(req)
 
+	// #nosec G704 -- Maintenance script calling hardcoded or config-provided explorer API
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get logs: %w", err)
@@ -278,7 +276,7 @@ func main() {
 
 	missingMessages := make(map[eth_common.Address]map[uint64]bool)
 
-	conn, admin, err := getAdminClient(ctx, *adminRPC)
+	conn, admin, err := getAdminClient(*adminRPC)
 	if err != nil {
 		conn.Close()
 		log.Fatalf("failed to get admin client: %v", err)
@@ -308,17 +306,17 @@ func main() {
 			RpcBackfill:    true,
 			BackfillNodes:  sdk.PublicRPCEndpoints,
 		}
-		resp, err := admin.FindMissingMessages(ctx, &msg)
-		if err != nil {
-			log.Fatalf("failed to run find FindMissingMessages RPC: %v", err)
+		resp, rpcErr := admin.FindMissingMessages(ctx, &msg)
+		if rpcErr != nil {
+			log.Fatalf("failed to run find FindMissingMessages RPC: %v", rpcErr)
 		}
 
 		msgs := []*db.VAAID{}
 		for _, id := range resp.MissingMessages {
 			fmt.Println(id)
-			vId, err := db.VaaIDFromString(id)
-			if err != nil {
-				log.Fatalf("failed to parse VAAID: %v", err)
+			vId, parseErr := db.VaaIDFromString(id)
+			if parseErr != nil {
+				log.Fatalf("failed to parse VAAID: %v", parseErr)
 			}
 			if *vId == polygonIgnoredVaa {
 				log.Printf("Ignored message: %+v", &polygonIgnoredVaa)
@@ -348,9 +346,9 @@ func main() {
 	// Press enter to continue if not in dryRun mode
 	if !*dryRun {
 		fmt.Println("Press enter to continue")
-		_, err := fmt.Scanln()
-		if err != nil {
-			log.Printf("Scanln error: %s\n", err)
+		_, scanErr := fmt.Scanln()
+		if scanErr != nil {
+			log.Printf("Scanln error: %s\n", scanErr)
 		}
 	}
 
@@ -437,8 +435,8 @@ func main() {
 			}
 
 			var seq uint64
-			if m, err := ethAbi.Unpack("LogMessagePublished", b); err != nil {
-				log.Fatalf("failed to unpack log data for %s: %v", l.TransactionHash, err)
+			if m, unpackErr := ethAbi.Unpack("LogMessagePublished", b); unpackErr != nil {
+				log.Fatalf("failed to unpack log data for %s: %v", l.TransactionHash, unpackErr)
 			} else {
 				seq = m[0].(uint64)
 			}
@@ -491,6 +489,7 @@ func main() {
 					panic(err)
 				}
 				req = addUserAgent(req)
+				// #nosec G704 -- Maintenance script calling hardcoded or config-provided explorer API
 				resp, err := c.Do(req)
 				if err != nil {
 					log.Fatalf("verify: %v", err)
@@ -498,6 +497,7 @@ func main() {
 				defer resp.Body.Close()
 
 				if resp.StatusCode != http.StatusOK {
+					// #nosec G706 -- Logging response status code from trusted API
 					log.Printf("status %d, retrying", resp.StatusCode)
 					time.Sleep(5 * time.Second)
 					continue

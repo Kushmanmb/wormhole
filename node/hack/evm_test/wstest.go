@@ -24,6 +24,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/certusone/wormhole/node/pkg/common"
 	ethAbi "github.com/certusone/wormhole/node/pkg/watchers/evm/connectors/ethabi"
 	ethBind "github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethCommon "github.com/ethereum/go-ethereum/common"
@@ -49,8 +50,8 @@ func main() {
 	}
 
 	logger.Info("Connecting to websocket endpoint", zap.String("webSocket", *rpc))
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx, rootCancel := context.WithCancel(context.Background())
+	defer rootCancel()
 
 	rawClient, err := ethRpc.DialContext(ctx, *rpc)
 	if err != nil {
@@ -59,7 +60,9 @@ func main() {
 
 	client := ethClient.NewClient(rawClient)
 
-	errC := make(chan error)
+	// Buffer one subscription error so the first failure survives until main
+	// reaches its final select.
+	errC := make(chan error, 1)
 
 	if *blocks {
 		logger.Info("Subscribing for latest blocks")
@@ -77,7 +80,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case err := <-headerSubscription.Err():
-					errC <- fmt.Errorf("block subscription failed: %w", err) //nolint:channelcheck // The watcher will exit anyway
+					common.WriteToChannelWithoutBlocking(errC, fmt.Errorf("block subscription failed: %w", err), "wstest_errc")
 					return
 				case block := <-headSink:
 					// These two pointers should have been checked before the event was placed on the channel, but just being safe.
@@ -98,10 +101,10 @@ func main() {
 			logger.Fatal("Failed to create filter", zap.Error(err))
 		}
 
-		timeout, cancel := context.WithTimeout(ctx, 15*time.Second)
+		watchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
 		messageC := make(chan *ethAbi.AbiLogMessagePublished, 2)
-		messageSub, err := filterer.WatchLogMessagePublished(&ethBind.WatchOpts{Context: timeout}, messageC, nil)
+		messageSub, err := filterer.WatchLogMessagePublished(&ethBind.WatchOpts{Context: watchCtx}, messageC, nil)
 		if err != nil {
 			logger.Fatal("Failed to subscribe to events", zap.Error(err))
 		}
@@ -114,7 +117,7 @@ func main() {
 				case <-ctx.Done():
 					return
 				case err := <-messageSub.Err():
-					errC <- fmt.Errorf("message subscription failed: %w", err) //nolint:channelcheck // The watcher will exit anyway
+					common.WriteToChannelWithoutBlocking(errC, fmt.Errorf("message subscription failed: %w", err), "wstest_errc")
 					return
 				case ev := <-messageC:
 					logger.Info("Received a log event from the contract", zap.Any("ev", ev))
@@ -130,7 +133,7 @@ func main() {
 	go func() {
 		<-sigterm
 		logger.Info("Received sigterm. exiting.")
-		cancel()
+		rootCancel()
 	}()
 
 	// Wait for either a shutdown or a fatal error from the permissions watcher.

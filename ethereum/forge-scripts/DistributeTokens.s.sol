@@ -24,9 +24,9 @@ contract DistributeTokens is Script {
     // Authorized owner addresses (replace with actual addresses)
     // These should match the addresses in distribution-config.json
     // DO NOT DEPLOY WITH THESE TEST ADDRESSES - THEY ARE NOT SECURE
-    address constant OWNER_KUSHMANMB = address(0xDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF);
-    address constant OWNER_YAKETH = address(0xCAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE);
-    address constant OWNER_KUSHMANMB_ETH = address(0xFEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE);
+    address constant OWNER_KUSHMANMB = address(0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF);
+    address constant OWNER_YAKETH = address(0xCafEBAbECAFEbAbEcaFEbabECAfebAbEcAFEBaBe);
+    address constant OWNER_KUSHMANMB_ETH = address(0xfeEDfaCeFeEdFaceFEedFACefEEDFaCEfEeDfAce);
     
     // Safety limits
     uint256 constant MAX_SINGLE_DISTRIBUTION = 100 ether;
@@ -51,9 +51,9 @@ contract DistributeTokens is Script {
      */
     function _hasPlaceholderAddresses() internal pure returns (bool) {
         // Check if any owner address appears to be a placeholder
-        if (OWNER_KUSHMANMB == address(0xDEADBEEFDEADBEEFDEADBEEFDEADBEEFDEADBEEF)) return true;
-        if (OWNER_YAKETH == address(0xCAFEBABECAFEBABECAFEBABECAFEBABECAFEBABE)) return true;
-        if (OWNER_KUSHMANMB_ETH == address(0xFEEDFACEFEEDFACEFEEDFACEFEEDFACEFEEDFACE)) return true;
+        if (OWNER_KUSHMANMB == address(0xDeaDbeefdEAdbeefdEadbEEFdeadbeEFdEaDbeeF)) return true;
+        if (OWNER_YAKETH == address(0xCafEBAbECAFEbAbEcaFEbabECAfebAbEcAFEBaBe)) return true;
+        if (OWNER_KUSHMANMB_ETH == address(0xfeEDfaCeFeEdFaceFEedFACefEEDFaCEfEeDfAce)) return true;
         
         // Also check for zero addresses
         if (OWNER_KUSHMANMB == address(0)) return true;
@@ -73,8 +73,8 @@ contract DistributeTokens is Script {
     ) public view {
         // Security check: warn if placeholder addresses detected
         if (_hasPlaceholderAddresses()) {
-            console.log("⚠️  WARNING: PLACEHOLDER ADDRESSES DETECTED!");
-            console.log("⚠️  DO NOT USE IN PRODUCTION - UPDATE OWNER ADDRESSES FIRST!");
+            console.log("WARNING: PLACEHOLDER ADDRESSES DETECTED!");
+            console.log("DO NOT USE IN PRODUCTION - UPDATE OWNER ADDRESSES FIRST!");
         }
         
         _validateInputs(tokenAddress, recipients, amounts);

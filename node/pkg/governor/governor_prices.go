@@ -157,7 +157,7 @@ func (gov *ChainGovernor) queryCoinGecko(ctx context.Context) error {
 		for {
 			select {
 			case <-ticker.C:
-				throttle <- 1 //nolint:channelcheck // We want this to block for throttling
+				throttle <- 1 //nolint:channelcheck // Blocking used for throttling CoinGecko API requests below.
 			case <-ctx.Done():
 				return
 			}
@@ -166,7 +166,7 @@ func (gov *ChainGovernor) queryCoinGecko(ctx context.Context) error {
 
 	for queryIdx, query := range gov.coinGeckoQueries {
 		<-throttle
-		query := query + "&" + params.Encode()
+		query = query + "&" + params.Encode()
 		thisResult, err := gov.queryCoinGeckoChunk(query)
 		if err != nil {
 			gov.logger.Error("CoinGecko query failed", zap.Error(err), zap.Int("queryIdx", queryIdx), zap.String("query", query))
@@ -178,7 +178,7 @@ func (gov *ChainGovernor) queryCoinGecko(ctx context.Context) error {
 			result[key] = value
 		}
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(1 * time.Second) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 	}
 
 	now := time.Now()
@@ -240,7 +240,7 @@ func (gov *ChainGovernor) queryCoinGecko(ctx context.Context) error {
 					zap.Stringer("cfgPrice", te.cfgPrice),
 				)
 
-				te.price = te.cfgPrice
+				te.price.Set(te.cfgPrice)
 				// Don't update the timestamp so we'll know when we last received an update from CoinGecko.
 			}
 		}
@@ -299,7 +299,7 @@ func (gov *ChainGovernor) revertAllPrices() {
 				zap.Stringer("cfgPrice", te.cfgPrice),
 			)
 
-			te.price = te.cfgPrice
+			te.price.Set(te.cfgPrice)
 			// Don't update the timestamp so we'll know when we last received an update from CoinGecko.
 		}
 	}

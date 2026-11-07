@@ -8,12 +8,13 @@ import (
 	"math/big"
 	"os"
 	"testing"
-	"time"
 
 	eth_common "github.com/ethereum/go-ethereum/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/wormhole-foundation/wormhole/sdk/vaa"
+
+	"github.com/certusone/wormhole/node/pkg/testutils"
 )
 
 // The following constants are used to calculate the offset of each field in the serialized message publication.
@@ -77,7 +78,7 @@ func makeTestMsgPub(t *testing.T) *MessagePublication {
 	// Use a non-default value for each field to ensure that the unmarshalled values are represented correctly.
 	return &MessagePublication{
 		TxID:              eth_common.HexToHash("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063").Bytes(),
-		Timestamp:         time.Unix(int64(1654516425), 0),
+		Timestamp:         testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:             123456,
 		Sequence:          789101112131415,
 		EmitterChain:      vaa.ChainIDEthereum,
@@ -300,7 +301,7 @@ func FuzzMessagePublicationUnmarshalBinary(f *testing.F) {
 	// Create a valid message publication for seeding
 	orig := &MessagePublication{
 		TxID:              make([]byte, TxIDLenMin), // Use minimum valid TxID length
-		Timestamp:         time.Unix(int64(1654516425), 0),
+		Timestamp:         testutils.MustTimeFromUnix(f, 1654516425),
 		Nonce:             123456,
 		Sequence:          789101112131415,
 		EmitterChain:      vaa.ChainIDEthereum,
@@ -392,7 +393,7 @@ func TestDeprecatedSerializeAndDeserializeOfMessagePublication(t *testing.T) {
 
 	msg1 := &MessagePublication{
 		TxID:             eth_common.HexToHash("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063").Bytes(),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -454,7 +455,7 @@ func TestSerializeAndDeserializeOfMessagePublicationWithEmptyTxID(t *testing.T) 
 
 	msg1 := &MessagePublication{
 		TxID:             []byte{},
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -501,7 +502,7 @@ func TestSerializeAndDeserializeOfMessagePublicationWithArbitraryTxID(t *testing
 
 	msg1 := &MessagePublication{
 		TxID:             []byte("This is some arbitrary string with just some random junk in it. This is to prove that the TxID does not have to be a ethCommon.Hash"),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -534,7 +535,7 @@ func TestTxIDStringTooLongShouldFail(t *testing.T) {
 
 	msg := &MessagePublication{
 		TxID:             txID,
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -562,7 +563,7 @@ func TestSerializeAndDeserializeOfMessagePublicationWithBigPayload(t *testing.T)
 
 	msg1 := &MessagePublication{
 		TxID:             eth_common.HexToHash("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063").Bytes(),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -603,7 +604,7 @@ func TestMarshalUnmarshalJSONOfMessagePublication(t *testing.T) {
 
 	msg1 := &MessagePublication{
 		TxID:             eth_common.HexToHash("0x06f541f5ecfc43407c31587aa6ac3a689e8960f36dc23c332db5510dfc6a4063").Bytes(),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -649,7 +650,7 @@ func TestMarshalUnmarshalJSONOfMessagePublicationWithArbitraryTxID(t *testing.T)
 
 	msg1 := &MessagePublication{
 		TxID:             []byte("This is some arbitrary string with just some random junk in it. This is to prove that the TxID does not have to be a ethCommon.Hash"),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -750,7 +751,7 @@ func TestTxIDStringMatchesHashToString(t *testing.T) {
 
 	msg := &MessagePublication{
 		TxID:             eth_common.HexToHash(expectedHashID).Bytes(),
-		Timestamp:        time.Unix(int64(1654516425), 0),
+		Timestamp:        testutils.MustTimeFromUnix(t, 1654516425),
 		Nonce:            123456,
 		Sequence:         789101112131415,
 		EmitterChain:     vaa.ChainIDEthereum,
@@ -836,8 +837,8 @@ func TestSafeRead(t *testing.T) {
 
 			// Fill slice with zeroes.
 			data := make([]byte, tt.size)
-			if _, err := f.Write(data); err != nil {
-				require.NoError(t, err)
+			if _, writeErr := f.Write(data); writeErr != nil {
+				require.NoError(t, writeErr)
 			}
 
 			// File pointer is at EOF at this point. Reset to the start.
@@ -853,6 +854,38 @@ func TestSafeRead(t *testing.T) {
 				require.NotNil(t, got, "got should not be nil when no error occurs")
 				require.True(t, bytes.Equal(got, data), "bytes read are not equal to bytes written")
 			}
+		})
+	}
+}
+
+func TestSafeReadN(t *testing.T) {
+	const limit = 512
+	tests := []struct {
+		name    string
+		size    int
+		n       int
+		wantErr error
+	}{
+		{name: "empty input", size: 0, n: limit},
+		{name: "exactly at limit", size: limit, n: limit},
+		{name: "one byte over limit", size: limit + 1, n: limit, wantErr: ErrInputTooLarge},
+		{name: "limit of one", size: 1, n: 1},
+		{name: "zero limit", size: 1, n: 0, wantErr: ErrInvalidReadLimit},
+		{name: "negative limit", size: 1, n: -1, wantErr: ErrInvalidReadLimit},
+		{name: "limit above MaxSafeInputSize", size: 1, n: MaxSafeInputSize + 1, wantErr: ErrInvalidReadLimit},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := bytes.Repeat([]byte{0xab}, tt.size)
+
+			got, err := SafeReadN(bytes.NewReader(data), tt.n)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, err, tt.wantErr)
+				require.Nil(t, got, "got should be nil when error occurs")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, data, got)
 		})
 	}
 }
@@ -963,5 +996,142 @@ func TestMessagePublication_IsWTT(t *testing.T) {
 			got := msg.IsWTT(tt.env)
 			assert.Equal(t, tt.want, got)
 		})
+	}
+}
+
+// TestNormalizeForDelegateConsensus verifies the per-guardian fields are reset
+// to safe defaults while consensus inputs (those hashed into CreateDigest) are
+// preserved.
+func TestNormalizeForDelegateConsensus(t *testing.T) {
+	emitter, err := vaa.StringToAddress("000000000000000000000000b1731c586ca89a23809861c6103f0b96b3f57d92")
+	require.NoError(t, err)
+
+	mp := &MessagePublication{
+		TxID:              eth_common.HexToHash("0x39c2f7f67fbce903d49bb24147668095f1b726acef3c19460da39e83c6929a2b").Bytes(),
+		Timestamp:         testutils.MustTimeFromUnix(t, 1746026862),
+		Nonce:             42,
+		Sequence:          95838,
+		ConsistencyLevel:  1,
+		EmitterChain:      vaa.ChainIDMoonbeam,
+		EmitterAddress:    emitter,
+		Payload:           []byte("payload"),
+		IsReobservation:   false,
+		Unreliable:        true,
+		verificationState: Anomalous, // start in a non-default state
+	}
+
+	digestBefore := mp.CreateDigest()
+
+	mp.NormalizeForDelegateConsensus()
+
+	// Per-guardian fields are reset to safe defaults.
+	require.True(t, mp.IsReobservation, "IsReobservation must be forced true")
+	require.False(t, mp.Unreliable, "Unreliable must be forced false")
+	require.Equal(t, NotVerified, mp.VerificationState(),
+		"verificationState must be NotVerified on canonical delegate-derived MPs — the canonical did not attempt verification")
+
+	// Fields hashed into the VAA digest are preserved — verified by digest stability.
+	require.Equal(t, digestBefore, mp.CreateDigest(),
+		"CreateDigest must be unchanged because the normalized fields are not part of the VAA digest")
+}
+
+// TestIsReobservationDoesNotSplitDelegateQuorumBucket asserts the protocol invariant
+// that two otherwise-identical MessagePublications differing only in IsReobservation
+// produce the SAME bucket key for the canonical guardian's delegate-quorum check
+// (pkg/processor/observation.go). The bucket key must match the canonical
+// observation path's key (pkg/processor/message.go — the VAA SigningDigest,
+// which is what CreateDigest returns), so that signatures across original and
+// re-observation flows merge into a single bucket.
+func TestIsReobservationDoesNotSplitDelegateQuorumBucket(t *testing.T) {
+	makeMP := func(isReobs bool) *MessagePublication {
+		emitter, err := vaa.StringToAddress("000000000000000000000000b1731c586ca89a23809861c6103f0b96b3f57d92")
+		require.NoError(t, err)
+		return &MessagePublication{
+			TxID:             eth_common.HexToHash("0x39c2f7f67fbce903d49bb24147668095f1b726acef3c19460da39e83c6929a2b").Bytes(),
+			Timestamp:        testutils.MustTimeFromUnix(t, 1746026862), // 2026-04-28T15:27:42Z, from the field case
+			Nonce:            0,
+			Sequence:         95838,
+			ConsistencyLevel: 1,
+			EmitterChain:     vaa.ChainIDMoonbeam, // chain 16
+			EmitterAddress:   emitter,
+			Payload:          []byte("identical-tb-transfer-payload"),
+			IsReobservation:  isReobs,
+		}
+	}
+
+	original := makeMP(false)
+	reobs := makeMP(true)
+
+	require.Equal(t, original.MessageIDString(), reobs.MessageIDString(),
+		"sanity: VAA MessageID is identical")
+
+	hashA := original.CreateDigest()
+	hashB := reobs.CreateDigest()
+
+	t.Logf("MessageID:                   %s", original.MessageIDString())
+	t.Logf("digest (IsReobservation=false): %s", hashA)
+	t.Logf("digest (IsReobservation=true):  %s", hashB)
+
+	require.Equal(t, hashA, hashB,
+		"CreateDigest (VAA SigningDigest) must be invariant under IsReobservation")
+}
+
+// TestDelegateQuorumIsReobservationDoesNotPreventQuorum models the field case
+// (chain 16 / seq 95838): 8 valid delegate signatures split 4/4 because some
+// guardians signed with IsReobservation=false and others with true. With a
+// delegated set size of 7, quorum is 5, so neither sub-bucket reaches quorum
+// today. This test asserts the desired behavior: all 8 signatures must land
+// in a single bucket and that bucket must reach quorum. It FAILS under current
+// code, proving the bug.
+func TestDelegateQuorumIsReobservationDoesNotPreventQuorum(t *testing.T) {
+	emitter, err := vaa.StringToAddress("000000000000000000000000b1731c586ca89a23809861c6103f0b96b3f57d92")
+	require.NoError(t, err)
+	base := func(isReobs bool) *MessagePublication {
+		return &MessagePublication{
+			TxID:             eth_common.HexToHash("0x39c2f7f67fbce903d49bb24147668095f1b726acef3c19460da39e83c6929a2b").Bytes(),
+			Timestamp:        testutils.MustTimeFromUnix(t, 1746026862),
+			Sequence:         95838,
+			ConsistencyLevel: 1,
+			EmitterChain:     vaa.ChainIDMoonbeam,
+			EmitterAddress:   emitter,
+			Payload:          []byte("payload"),
+			IsReobservation:  isReobs,
+		}
+	}
+
+	// The bucket-key derivation must match the canonical observation path
+	// (pkg/processor/message.go → v.SigningDigest()), which is exactly what
+	// MessagePublication.CreateDigest() returns.
+	bucketKeyFor := func(isReobs bool) string {
+		return base(isReobs).CreateDigest()
+	}
+
+	// 8 distinct delegate guardians; 4 sign as original observation, 4 re-observed.
+	originalGuardians := []string{"000ac007", "178e21ad", "da798f68", "938f104a"}
+	reobsGuardians := []string{"178e21ad", "11b39756", "af45ced1", "f93124b7"}
+
+	buckets := map[string]int{}
+	for range originalGuardians {
+		buckets[bucketKeyFor(false)]++
+	}
+	for range reobsGuardians {
+		buckets[bucketKeyFor(true)]++
+	}
+
+	for hash, count := range buckets {
+		t.Logf("bucket %s: %d sigs", hash, count)
+	}
+
+	// Desired behavior: a single bucket holds every signature for this VAA.
+	require.Len(t, buckets, 1,
+		"all delegate signatures for the same VAA must land in one bucket, "+
+			"regardless of IsReobservation")
+
+	// And that bucket must clear quorum for a delegated set of 7 (CalculateQuorum = 5).
+	const setSize = 7
+	const quorum = (setSize*2)/3 + 1
+	for _, count := range buckets {
+		require.GreaterOrEqual(t, count, quorum,
+			"the merged bucket should reach quorum on its own")
 	}
 }

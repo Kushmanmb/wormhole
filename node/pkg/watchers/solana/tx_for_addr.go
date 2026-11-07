@@ -17,6 +17,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/certusone/wormhole/node/pkg/common"
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
 	"go.uber.org/zap"
@@ -39,7 +40,7 @@ func (s *SolanaWatcher) transactionProcessor(ctx context.Context) error {
 		s.pollPrevWormholeSignature, err = s.getPrevWormholeSignature()
 		if err != nil {
 			s.logger.Error("failed to get the last wormhole signature on start up", zap.Error(err))
-			s.errC <- err
+			common.WriteToChannelWithoutBlocking(s.errC, err, "solana_errc")
 			return err
 		}
 	}
@@ -58,7 +59,7 @@ func (s *SolanaWatcher) transactionProcessor(ctx context.Context) error {
 			err := s.processNewTransactions()
 			if err != nil {
 				s.logger.Error("failed to get transactions", zap.Error(err))
-				s.errC <- err
+				common.WriteToChannelWithoutBlocking(s.errC, err, "solana_errc")
 				return err
 			}
 		}
@@ -154,11 +155,11 @@ func (s *SolanaWatcher) getTransactionSignatures() ([]*rpc.TransactionSignature,
 func (s *SolanaWatcher) processTransactionWithRetry(signature solana.Signature) {
 	for count := range maxRetries {
 		if count != 0 {
-			time.Sleep(retryDelay)
+			time.Sleep(retryDelay) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 		}
 
 		rCtx, cancel := context.WithTimeout(s.ctx, rpcTimeout)
-		version := uint64(0)
+		version := uint64(1)
 		result, err := s.rpcClient.GetTransaction(
 			rCtx,
 			signature,

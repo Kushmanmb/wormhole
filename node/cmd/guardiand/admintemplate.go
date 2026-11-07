@@ -80,8 +80,24 @@ var governanceCallData *string
 var coreBridgeSetMessageFeeChainId *string
 var coreBridgeSetMessageFeeMessageFee *string
 
+var coreBridgeTransferFeesChainId *string
+var coreBridgeTransferFeesAmount *string
+var coreBridgeTransferFeesRecipient *string
+
 var delegatedGuardiansConfigJson *string
 var delegatedGuardiansConfigId *string
+
+var delegatedManagerChainId *string
+var delegatedManagerSetIndex *string
+var delegatedManagerSet *string
+var delegatedManagerThreshold *string
+var delegatedManagerNumKeys *string
+var delegatedManagerPublicKeys *string
+
+var tokenBridgeSetPauserAddressesTargetChainId *string
+var tokenBridgeSetPauserAddressesPauser *string
+var tokenBridgeSetPauserAddressesFreezer *string
+var tokenBridgeSetPauserAddressesUnpauser *string
 
 func init() {
 	governanceFlagSet := pflag.NewFlagSet("governance", pflag.ExitOnError)
@@ -91,7 +107,7 @@ func init() {
 	moduleFlagSet := pflag.NewFlagSet("module", pflag.ExitOnError)
 	module = moduleFlagSet.String("module", "", "Module name")
 
-	templateGuardianIndex = TemplateCmd.PersistentFlags().Int("idx", 4, "Default current guardian set index")
+	templateGuardianIndex = TemplateCmd.PersistentFlags().Int("idx", 7, "Default current guardian set index")
 
 	setUpdateNumGuardians = AdminClientGuardianSetTemplateCmd.Flags().Int("num", 1, "Number of devnet guardians in example file")
 	TemplateCmd.AddCommand(AdminClientGuardianSetTemplateCmd)
@@ -217,6 +233,14 @@ func init() {
 	AdminClientCoreBridgeSetMessageFeeCmd.Flags().AddFlagSet(coreBridgeSetMessageFeeFlagSet)
 	TemplateCmd.AddCommand(AdminClientCoreBridgeSetMessageFeeCmd)
 
+	// flags for the core-bridge-transfer-fees command
+	coreBridgeTransferFeesFlagSet := pflag.NewFlagSet("core-bridge-transfer-fees", pflag.ExitOnError)
+	coreBridgeTransferFeesChainId = coreBridgeTransferFeesFlagSet.String("chain-id", "", "Chain ID")
+	coreBridgeTransferFeesAmount = coreBridgeTransferFeesFlagSet.String("amount", "", "Amount of native fee tokens to transfer (decimal)")
+	coreBridgeTransferFeesRecipient = coreBridgeTransferFeesFlagSet.String("recipient", "", "Recipient address (hex, base58 or bech32)")
+	AdminClientCoreBridgeTransferFeesCmd.Flags().AddFlagSet(coreBridgeTransferFeesFlagSet)
+	TemplateCmd.AddCommand(AdminClientCoreBridgeTransferFeesCmd)
+
 	// flags for delegated guardian set configuration command
 	delegatedGuardiansConfigFlagSet := pflag.NewFlagSet("delegated-guardians-config", pflag.ExitOnError)
 	delegatedGuardiansConfigJson = delegatedGuardiansConfigFlagSet.String("config", "", "Delegated guardians configuration JSON. ex: '{\"chainId\": {\"keys\": [\"0x123\", \"0x456\"], \"threshold\": 2}}'")
@@ -236,6 +260,30 @@ func init() {
 	// solana call command
 	AdminClientGeneralPurposeGovernanceSolanaCallCmd.Flags().AddFlagSet(generalPurposeGovernanceFlagSet)
 	TemplateCmd.AddCommand(AdminClientGeneralPurposeGovernanceSolanaCallCmd)
+	// sui call command
+	AdminClientGeneralPurposeGovernanceSuiCallCmd.Flags().AddFlagSet(generalPurposeGovernanceFlagSet)
+	TemplateCmd.AddCommand(AdminClientGeneralPurposeGovernanceSuiCallCmd)
+
+	// flags for the delegated-manager-set-update command
+	delegatedManagerFlagSet := pflag.NewFlagSet("delegated-manager", pflag.ExitOnError)
+	delegatedManagerChainId = delegatedManagerFlagSet.String("manager-chain-id", "", "Wormhole Chain ID for the manager chain (e.g., 65 for Dogecoin)")
+	delegatedManagerSetIndex = delegatedManagerFlagSet.String("manager-set-index", "", "Index of the new manager set (must be current + 1)")
+	delegatedManagerSet = delegatedManagerFlagSet.String("manager-set", "", "Hex-encoded manager set bytes (without leading 0x). Alternative to --threshold/--num-keys/--public-keys")
+	delegatedManagerThreshold = delegatedManagerFlagSet.String("threshold", "", "Number of required signatures (M) for secp256k1 multisig")
+	delegatedManagerNumKeys = delegatedManagerFlagSet.String("num-keys", "", "Total number of public keys (N) for secp256k1 multisig")
+	delegatedManagerPublicKeys = delegatedManagerFlagSet.String("public-keys", "", "Comma-separated list of compressed secp256k1 public keys (33 bytes each, hex-encoded)")
+	AdminClientDelegatedManagerSetUpdateCmd.Flags().AddFlagSet(delegatedManagerFlagSet)
+	TemplateCmd.AddCommand(AdminClientDelegatedManagerSetUpdateCmd)
+
+	// flags for the token-bridge-set-pauser-addresses command
+	tokenBridgeSetPauserAddressesFlagSet := pflag.NewFlagSet("token-bridge-set-pauser-addresses", pflag.ExitOnError)
+	tokenBridgeSetPauserAddressesTargetChainId = tokenBridgeSetPauserAddressesFlagSet.String("target-chain-id", "", "Target chain ID (name or uint16) where the pauser addresses should be set")
+	tokenBridgeSetPauserAddressesPauser = tokenBridgeSetPauserAddressesFlagSet.String("pauser", "", "Pauser address as hex (with or without 0x prefix), in the target chain's native size. Leave empty to unassign the role.")
+	tokenBridgeSetPauserAddressesFreezer = tokenBridgeSetPauserAddressesFlagSet.String("freezer", "", "Freezer address as hex (with or without 0x prefix), in the target chain's native size. Leave empty to unassign the role.")
+	tokenBridgeSetPauserAddressesUnpauser = tokenBridgeSetPauserAddressesFlagSet.String("unpauser", "", "Unpauser address as hex (with or without 0x prefix), in the target chain's native size. Leave empty to unassign the role.")
+	AdminClientTokenBridgeSetPauserAddressesCmd.Flags().AddFlagSet(tokenBridgeSetPauserAddressesFlagSet)
+	AdminClientTokenBridgeSetPauserAddressesCmd.Flags().AddFlagSet(moduleFlagSet)
+	TemplateCmd.AddCommand(AdminClientTokenBridgeSetPauserAddressesCmd)
 }
 
 var TemplateCmd = &cobra.Command{
@@ -369,6 +417,12 @@ var AdminClientCoreBridgeSetMessageFeeCmd = &cobra.Command{
 	Run:   runCoreBridgeSetMessageFeeTemplate,
 }
 
+var AdminClientCoreBridgeTransferFeesCmd = &cobra.Command{
+	Use:   "core-bridge-transfer-fees",
+	Short: "Generate a 'transfer fees' template for the core bridge (whitepaper 0004)",
+	Run:   runCoreBridgeTransferFeesTemplate,
+}
+
 var AdminClientDelegatedGuardiansConfigCmd = &cobra.Command{
 	Use:   "delegated-guardians-config",
 	Short: "Generate a 'delegated guardians config' template from a JSON file",
@@ -385,6 +439,24 @@ var AdminClientGeneralPurposeGovernanceSolanaCallCmd = &cobra.Command{
 	Use:   "governance-solana-call",
 	Short: "Generate a 'general purpose solana governance call' template for specified chain and address",
 	Run:   runGeneralPurposeGovernanceSolanaCallTemplate,
+}
+
+var AdminClientGeneralPurposeGovernanceSuiCallCmd = &cobra.Command{
+	Use:   "governance-sui-call",
+	Short: "Generate a 'general purpose sui governance call' template for specified chain and address",
+	Run:   runGeneralPurposeGovernanceSuiCallTemplate,
+}
+
+var AdminClientDelegatedManagerSetUpdateCmd = &cobra.Command{
+	Use:   "delegated-manager-set-update",
+	Short: "Generate a DelegatedManager manager set update governance VAA template",
+	Run:   runDelegatedManagerSetUpdateTemplate,
+}
+
+var AdminClientTokenBridgeSetPauserAddressesCmd = &cobra.Command{
+	Use:   "token-bridge-set-pauser-addresses",
+	Short: "Generate a token bridge SetPauserAddresses governance VAA template (whitepaper 0003)",
+	Run:   runTokenBridgeSetPauserAddressesTemplate,
 }
 
 func runGuardianSetTemplate(cmd *cobra.Command, args []string) {
@@ -521,6 +593,94 @@ func runTokenBridgeUpgradeContractTemplate(cmd *cobra.Command, args []string) {
 		log.Fatal("failed to marshal request: ", err)
 	}
 	fmt.Print(string(b))
+}
+
+func runTokenBridgeSetPauserAddressesTemplate(cmd *cobra.Command, args []string) {
+	if *module == "" {
+		log.Fatal("--module must be specified.")
+	}
+	// SetPauserAddresses is defined by whitepaper 0003 (token bridge) only.
+	if *module != vaa.TokenBridgeModuleName {
+		log.Fatalf("--module must be %q (got %q)", vaa.TokenBridgeModuleName, *module)
+	}
+	if *tokenBridgeSetPauserAddressesTargetChainId == "" {
+		log.Fatal("--target-chain-id must be specified.")
+	}
+	targetChainID, err := vaa.StringToKnownChainID(*tokenBridgeSetPauserAddressesTargetChainId)
+	if err != nil {
+		log.Fatal("failed to parse target chain id: ", err)
+	}
+
+	pauser, err := parsePauserAddressHex(*tokenBridgeSetPauserAddressesPauser)
+	if err != nil {
+		log.Fatal("failed to parse pauser: ", err)
+	}
+	freezer, err := parsePauserAddressHex(*tokenBridgeSetPauserAddressesFreezer)
+	if err != nil {
+		log.Fatal("failed to parse freezer: ", err)
+	}
+	unpauser, err := parsePauserAddressHex(*tokenBridgeSetPauserAddressesUnpauser)
+	if err != nil {
+		log.Fatal("failed to parse unpauser: ", err)
+	}
+
+	// The pauser/freezer/unpauser are kept as separate roles to allow asymmetric
+	// authority (whitepaper 0003). Setting them to the same value collapses that
+	// asymmetry and removes a higher-trust path, so flag it - but the design
+	// permits it for flexibility.
+	if pauser != "" && pauser == unpauser {
+		log.Println("WARNING: --pauser and --unpauser are the same address. This removes the intended higher-trust unpause path. Use only if symmetric pause/unpause authority is intentional.")
+	}
+	// The freezer is a higher-trust role than the pauser (a freeze can only be
+	// lifted by the unpauser, not permissionlessly). Sharing its key with the
+	// lower-trust pauser collapses that separation. We intentionally do NOT warn
+	// on freezer == unpauser: both are higher-trust roles, and a single key
+	// holding both is a plausible operational setup rather than a footgun.
+	if pauser != "" && pauser == freezer {
+		log.Println("WARNING: --pauser and --freezer are the same address. This collapses the higher-trust freeze role into the pauser. Use only if intentional.")
+	}
+
+	seq, nonce := randSeqNonce()
+	m := &nodev1.InjectGovernanceVAARequest{
+		CurrentSetIndex: uint32(*templateGuardianIndex), // #nosec G115 -- This will never overflow
+		Messages: []*nodev1.GovernanceMessage{
+			{
+				Sequence: seq,
+				Nonce:    nonce,
+				Payload: &nodev1.GovernanceMessage_BridgeSetPauserAddresses{
+					BridgeSetPauserAddresses: &nodev1.BridgeSetPauserAddresses{
+						Module:        *module,
+						TargetChainId: uint32(targetChainID),
+						Pauser:        pauser,
+						Freezer:       freezer,
+						Unpauser:      unpauser,
+					},
+				},
+			},
+		},
+	}
+
+	b, err := prototext.MarshalOptions{Multiline: true}.Marshal(m)
+	if err != nil {
+		log.Fatal("failed to marshal request: ", err)
+	}
+	fmt.Print(string(b))
+}
+
+// parsePauserAddressHex parses a pauser/freezer/unpauser address argument and
+// returns the hex encoding used on the wire (no 0x prefix). An empty input
+// returns an empty string, which the admin server interprets as the role being
+// unassigned.
+//
+// The on-chain contract enforces that non-empty addresses match the target
+// chain's native address size, so this helper preserves the caller-supplied
+// length verbatim - unlike parseAddress, which left-pads to 32 bytes.
+func parsePauserAddressHex(s string) (string, error) {
+	b, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("invalid hex address: %w", err)
+	}
+	return hex.EncodeToString(b), nil
 }
 
 func runRecoverChainIdTemplate(cmd *cobra.Command, args []string) {
@@ -1174,6 +1334,48 @@ func runCoreBridgeSetMessageFeeTemplate(cmd *cobra.Command, args []string) {
 	fmt.Print(string(b))
 }
 
+func runCoreBridgeTransferFeesTemplate(cmd *cobra.Command, args []string) {
+	chainID, err := parseChainID(*coreBridgeTransferFeesChainId)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *coreBridgeTransferFeesAmount == "" {
+		log.Fatal("--amount must be specified")
+	}
+	if *coreBridgeTransferFeesRecipient == "" {
+		log.Fatal("--recipient must be specified")
+	}
+	recipient, err := parseAddress(*coreBridgeTransferFeesRecipient)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	seq, nonce := randSeqNonce()
+
+	m := &nodev1.InjectGovernanceVAARequest{
+		CurrentSetIndex: uint32(*templateGuardianIndex), // #nosec G115 -- Number of guardians will never overflow here
+		Messages: []*nodev1.GovernanceMessage{
+			{
+				Sequence: seq,
+				Nonce:    nonce,
+				Payload: &nodev1.GovernanceMessage_CoreBridgeTransferFees{
+					CoreBridgeTransferFees: &nodev1.CoreBridgeTransferFees{
+						ChainId:   uint32(chainID),
+						Amount:    *coreBridgeTransferFeesAmount,
+						Recipient: recipient,
+					},
+				},
+			},
+		},
+	}
+
+	b, err := prototext.MarshalOptions{Multiline: true}.Marshal(m)
+	if err != nil {
+		log.Fatal("failed to marshal request: ", err)
+	}
+	fmt.Print(string(b))
+}
+
 func runDelegatedGuardiansConfigTemplate(cmd *cobra.Command, args []string) {
 	if *delegatedGuardiansConfigId == "" {
 		log.Fatal("--config-id must be specified")
@@ -1296,6 +1498,145 @@ func runGeneralPurposeGovernanceSolanaCallTemplate(cmd *cobra.Command, args []st
 						ChainId:            uint32(chainID),
 						GovernanceContract: *governanceContractAddress,
 						EncodedInstruction: *governanceCallData,
+					},
+				},
+			},
+		},
+	}
+
+	b, err := prototext.MarshalOptions{Multiline: true}.Marshal(m)
+	if err != nil {
+		log.Fatal("failed to marshal request: ", err)
+	}
+	fmt.Print(string(b))
+}
+
+func runGeneralPurposeGovernanceSuiCallTemplate(cmd *cobra.Command, args []string) {
+	if *governanceCallData == "" {
+		log.Fatal("--call-data must be specified")
+	}
+	if *governanceContractAddress == "" {
+		log.Fatal("--governance-contract must be specified")
+	}
+	govAddr := *governanceContractAddress
+	stripped := strings.TrimPrefix(govAddr, "0x")
+	addrBytes, err := hex.DecodeString(stripped)
+	if err != nil {
+		log.Fatal("invalid governance contract address (expected hex)")
+	}
+	if len(addrBytes) != 32 {
+		log.Fatal("invalid governance contract address length (expected 32 bytes)")
+	}
+	if *governanceTargetChain == "" {
+		log.Fatal("--chain-id must be specified")
+	}
+	chainID, err := parseChainID(*governanceTargetChain)
+	if err != nil {
+		log.Fatal("failed to parse chain id: ", err)
+	}
+
+	seq, nonce := randSeqNonce()
+	m := &nodev1.InjectGovernanceVAARequest{
+		CurrentSetIndex: uint32(*templateGuardianIndex), // #nosec G115 -- This will never overflow
+		Messages: []*nodev1.GovernanceMessage{
+			{
+				Sequence: seq,
+				Nonce:    nonce,
+				Payload: &nodev1.GovernanceMessage_SuiCall{
+					SuiCall: &nodev1.SuiCall{
+						ChainId:            uint32(chainID),
+						GovernanceContract: govAddr,
+						EncodedCall:        *governanceCallData,
+					},
+				},
+			},
+		},
+	}
+
+	b, err := prototext.MarshalOptions{Multiline: true}.Marshal(m)
+	if err != nil {
+		log.Fatal("failed to marshal request: ", err)
+	}
+	fmt.Print(string(b))
+}
+
+func runDelegatedManagerSetUpdateTemplate(cmd *cobra.Command, args []string) {
+	if *delegatedManagerChainId == "" {
+		log.Fatal("--manager-chain-id must be specified")
+	}
+	managerChainId, err := parseChainID(*delegatedManagerChainId)
+	if err != nil {
+		log.Fatal("failed to parse manager-chain-id: ", err)
+	}
+
+	if *delegatedManagerSetIndex == "" {
+		log.Fatal("--manager-set-index must be specified")
+	}
+	managerSetIndex, err := strconv.ParseUint(*delegatedManagerSetIndex, 10, 32)
+	if err != nil {
+		log.Fatal("failed to parse manager-set-index as uint32: ", err)
+	}
+
+	var managerSet string
+	if *delegatedManagerSet != "" {
+		// Use raw manager set bytes if provided
+		managerSet = strings.TrimPrefix(*delegatedManagerSet, "0x")
+		// Validate it's valid hex
+		if _, hexErr := hex.DecodeString(managerSet); hexErr != nil {
+			log.Fatal("invalid manager-set (expected hex): ", hexErr)
+		}
+	} else if *delegatedManagerThreshold != "" && *delegatedManagerNumKeys != "" && *delegatedManagerPublicKeys != "" {
+		// Build secp256k1 multisig manager set from components
+		threshold, thresholdErr := strconv.ParseUint(*delegatedManagerThreshold, 10, 8)
+		if thresholdErr != nil {
+			log.Fatal("failed to parse threshold as uint8: ", thresholdErr)
+		}
+		numKeys, numKeysErr := strconv.ParseUint(*delegatedManagerNumKeys, 10, 8)
+		if numKeysErr != nil {
+			log.Fatal("failed to parse num-keys as uint8: ", numKeysErr)
+		}
+		publicKeyStrs := strings.Split(*delegatedManagerPublicKeys, ",")
+
+		// Parse public keys into the format expected by vaa.Secp256k1MultisigManagerSet
+		publicKeys := make([][vaa.CompressedSecp256k1PublicKeyLength]byte, len(publicKeyStrs))
+		for i, pkStr := range publicKeyStrs {
+			pkHex := strings.TrimPrefix(strings.TrimSpace(pkStr), "0x")
+			pkBytes, pkErr := hex.DecodeString(pkHex)
+			if pkErr != nil {
+				log.Fatalf("public key %d is not valid hex: %v", i, pkErr)
+			}
+			if len(pkBytes) != vaa.CompressedSecp256k1PublicKeyLength {
+				log.Fatalf("public key %d has invalid length: expected %d bytes, got %d", i, vaa.CompressedSecp256k1PublicKeyLength, len(pkBytes))
+			}
+			copy(publicKeys[i][:], pkBytes)
+		}
+
+		managerSetStruct := vaa.Secp256k1MultisigManagerSet{
+			M:          uint8(threshold),
+			N:          uint8(numKeys),
+			PublicKeys: publicKeys,
+		}
+		managerSetBytes, serializeErr := managerSetStruct.Serialize()
+		if serializeErr != nil {
+			log.Fatal("failed to serialize manager set: ", serializeErr)
+		}
+		managerSet = hex.EncodeToString(managerSetBytes)
+	} else {
+		log.Fatal("Either --manager-set or (--threshold, --num-keys, --public-keys) must be provided")
+	}
+
+	seq, nonce := randSeqNonce()
+	m := &nodev1.InjectGovernanceVAARequest{
+		CurrentSetIndex: uint32(*templateGuardianIndex), // #nosec G115 -- This will never overflow
+		Messages: []*nodev1.GovernanceMessage{
+			{
+				Sequence: seq,
+				Nonce:    nonce,
+				Payload: &nodev1.GovernanceMessage_DelegatedManagerSetUpdate{
+					DelegatedManagerSetUpdate: &nodev1.DelegatedManagerSetUpdate{
+						ManagerChainId:  uint32(managerChainId),
+						ManagerSetIndex: uint32(managerSetIndex),
+						ManagerSet:      managerSet,
 					},
 				},
 			},

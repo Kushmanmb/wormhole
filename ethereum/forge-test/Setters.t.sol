@@ -168,10 +168,16 @@ contract TestSetters is TestUtils {
         unchangedStorage(address(setters), storageSlot)
     {
         vm.assume(storageSlot != GOVERNANCECONTRACT_STORAGE_INDEX);
+        vm.assume(newGovernanceContract != bytes32(0));
 
         setters.setGovernanceContract_external(newGovernanceContract);
 
         assertEq(newGovernanceContract, vm.load(address(setters), GOVERNANCECONTRACT_STORAGE_INDEX));
+    }
+
+    function testSetGovernanceContract_Revert_ZeroAddress() public {
+        vm.expectRevert("governance contract cannot be zero address");
+        setters.setGovernanceContract_external(bytes32(0));
     }
 
     function testSetGovernanceContract_KEVM(bytes32 newGovernanceContract, bytes32 storageSlot)

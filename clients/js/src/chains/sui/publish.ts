@@ -1,248 +1,201 @@
-import {
-  fromB64,
-  getPublishedObjectChanges,
-  normalizeSuiObjectId,
-  RawSigner,
-  TransactionBlock,
-} from "@mysten/sui.js";
-import { execSync } from "child_process";
+import { Transaction } from "@mysten/sui/transactions";
+import { fromBase64 } from "@mysten/sui/utils";
+import { execFileSync } from "child_process";
 import fs from "fs";
-import { resolve } from "path";
-import { MoveToml } from "./MoveToml";
 import { SuiBuildOutput } from "./types";
-import { executeTransactionBlock } from "./utils";
+import {
+  executeTransactionBlock,
+  fetchTransactionResult,
+  getPublishedPackageId,
+  normalizeSuiAddress,
+  SuiSigner,
+  SuiTransactionResult,
+} from "./utils";
 import { Network } from "@wormhole-foundation/sdk";
 
-export const buildPackage = (packagePath: string): SuiBuildOutput => {
-  if (!fs.existsSync(packagePath)) {
+/**
+ * Map SDK Network to Sui CLI environment name.
+ */
+const getEnvironmentFlag = (network: Network): string | undefined => {
+  switch (network) {
+    case "Mainnet":
+      return "mainnet";
+    case "Testnet":
+      return "testnet";
+    case "Devnet":
+      return undefined;
+    default:
+      return undefined;
+  }
+};
+
+const resolvePackageDir = (packagePath: string): string => {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync(packagePath);
+  } catch {
     throw new Error(`Package not found at ${packagePath}`);
   }
 
-  return JSON.parse(
-    execSync(
-      `sui move build --dump-bytecode-as-base64 --path ${packagePath} 2> /dev/null`,
-      {
-        encoding: "utf-8",
-      }
-    )
-  );
+  if (!fs.statSync(resolved).isDirectory()) {
+    throw new Error(`Package path is not a directory: ${packagePath}`);
+  }
+
+  return resolved;
+};
+
+export const buildPackage = (
+  packagePath: string,
+  network: Network = "Devnet"
+): SuiBuildOutput => {
+  const packageDir = resolvePackageDir(packagePath);
+
+  const env = getEnvironmentFlag(network);
+  const args = [
+    "move",
+    "build",
+    "--dump-bytecode-as-base64",
+    "-q",
+    ...(env ? ["-e", env] : []),
+    "--path",
+    packageDir,
+  ];
+
+  let stdout: string;
+  try {
+    stdout = execFileSync("sui", args, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e: any) {
+    const detail = [e.stderr, e.stdout, e.message].filter(Boolean).join("\n");
+    throw new Error(
+      `Failed to build package: ${detail}\nCommand: sui ${args.join(" ")}`
+    );
+  }
+
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    throw new Error(`Unexpected non-JSON output from build command: ${stdout}`);
+  }
 };
 
 /**
- * Get Move.toml dependencies by looking for all lines of form 'local = ".*"'.
- * This works because network-specific Move.toml files should not contain
- * dev addresses, so the only lines that match this regex are the dependencies
- * that need to be replaced.
- * @param packagePath
- * @returns
+ * Publish a package using test-publish for Devnet (ephemeral) or SDK publish for persistent networks.
  */
-export const getAllLocalPackageDependencyPaths = (
-  tomlPath: string
-): string[] => {
-  const tomlStr = fs.readFileSync(tomlPath, "utf8").toString();
-  const toml = new MoveToml(tomlStr);
-
-  // Sanity check that Move.toml does not contain dev info since this breaks
-  // building and publishing packages
-  if (
-    toml.getSectionNames().some((name) => name.includes("dev-dependencies")) ||
-    toml.getSectionNames().some((name) => name.includes("dev-addresses"))
-  ) {
-    throw new Error(
-      "Network-specific Move.toml should not contain dev-dependencies or dev-addresses."
-    );
+export const publishPackage = async (
+  signer: SuiSigner,
+  network: Network,
+  packagePath: string
+): Promise<SuiTransactionResult> => {
+  if (network === "Devnet") {
+    return publishPackageTestPublish(signer, packagePath);
   }
-
-  const packagePath = getPackagePathFromTomlPath(tomlPath);
-  return [...tomlStr.matchAll(/local = "(.*)"/g)].map((match) =>
-    resolve(packagePath, match[1])
-  );
+  return publishPackageSDK(signer, network, packagePath);
 };
 
-export const getDefaultTomlPath = (packagePath: string): string =>
-  `${packagePath}/Move.toml`;
+/**
+ * Extract the transaction digest from `sui client test-publish -q --json`
+ * output. `-q` keeps the human-readable build lines on stderr, so stdout is a
+ * single JSON object and needs no text slicing. Only the digest is read here;
+ * the transaction's effects are fetched separately over gRPC.
+ */
+export const parseTestPublishDigest = (output: string): string => {
+  let parsed: any;
+  try {
+    parsed = JSON.parse(output);
+  } catch {
+    throw new Error(`Unexpected non-JSON output from test-publish: ${output}`);
+  }
 
-export const getPackageNameFromPath = (packagePath: string): string =>
-  packagePath.split("/").pop() || "";
+  const digest = parsed?.digest;
+  if (typeof digest !== "string") {
+    throw new Error(`No transaction digest in test-publish output: ${output}`);
+  }
+  return digest;
+};
 
-export const publishPackage = async (
-  signer: RawSigner,
+/**
+ * Publish via `sui client test-publish` for Devnet/localnet.
+ *
+ * The Sui package system resolves local, not-yet-published dependencies (e.g.
+ * the core bridge imported by the token bridge) per chain id. `test-publish`
+ * performs that resolution together with `--publish-unpublished-deps` without
+ * requiring Published.toml management — something a plain SDK `tx.publish`
+ * cannot reproduce on an ephemeral local network. It signs with the locally
+ * configured CLI keystore and commits on-chain, so the resulting transaction is
+ * read back over gRPC rather than parsed from the CLI's deprecated JSON-RPC
+ * `objectChanges` payload.
+ */
+const publishPackageTestPublish = async (
+  signer: SuiSigner,
+  packagePath: string
+): Promise<SuiTransactionResult> => {
+  const packageDir = resolvePackageDir(packagePath);
+
+  // `--build-env testnet` selects testnet dependency pins (localnet is not a
+  // pinned environment); `--publish-unpublished-deps` publishes dependencies
+  // that are not yet on-chain for this network.
+  // `-q` keeps the build progress lines on stderr so stdout carries only the
+  // `--json` payload; the streams are left split (no `2>&1`).
+  const args = [
+    "client",
+    "test-publish",
+    packageDir,
+    "--publish-unpublished-deps",
+    "--build-env",
+    "testnet",
+    "-q",
+    "--json",
+  ];
+
+  let output: string;
+  try {
+    output = execFileSync("sui", args, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (e: any) {
+    const detail = [e.stderr, e.stdout, e.message].filter(Boolean).join("\n");
+    throw new Error(`test-publish failed:\n${detail}`);
+  }
+
+  const digest = parseTestPublishDigest(output);
+  return fetchTransactionResult(signer.client, digest);
+};
+
+/**
+ * Use SDK publish for persistent networks (Mainnet, Testnet).
+ */
+const publishPackageSDK = async (
+  signer: SuiSigner,
   network: Network,
   packagePath: string
 ) => {
-  try {
-    setupMainToml(packagePath, network);
-    const build = buildPackage(packagePath);
+  const build = buildPackage(packagePath, network);
 
-    // Publish contracts
-    const tx = new TransactionBlock();
-    if (network === "Devnet") {
-      // Avoid Error checking transaction input objects: GasBudgetTooHigh { gas_budget: 50000000000, max_budget: 10000000000 }
-      tx.setGasBudget(10000000000);
-    }
-    const [upgradeCap] = tx.publish({
-      modules: build.modules.map((m) => Array.from(fromB64(m))),
-      dependencies: build.dependencies.map((d) => normalizeSuiObjectId(d)),
-    });
+  console.log(
+    `Build output: ${build.modules.length} modules, ${build.dependencies.length} dependencies`
+  );
 
-    // Transfer upgrade capability to deployer
-    tx.transferObjects([upgradeCap], tx.pure(await signer.getAddress()));
+  const tx = new Transaction();
+  const [upgradeCap] = tx.publish({
+    modules: build.modules.map((m) => Array.from(fromBase64(m))),
+    dependencies: build.dependencies.map((d) => normalizeSuiAddress(d)),
+  });
 
-    // Execute transactions
-    const res = await executeTransactionBlock(signer, tx);
+  tx.transferObjects(
+    [upgradeCap],
+    signer.keypair.getPublicKey().toSuiAddress()
+  );
 
-    // Update network-specific Move.toml with package ID
-    const publishEvents = getPublishedObjectChanges(res);
-    if (publishEvents.length !== 1) {
-      throw new Error(
-        "No publish event found in transaction:" +
-          JSON.stringify(res.objectChanges, null, 2)
-      );
-    }
+  const res = await executeTransactionBlock(signer, tx);
 
-    updateNetworkToml(packagePath, network, publishEvents[0].packageId);
+  console.log(`Transaction status: ${res.success ? "success" : res.error}`);
 
-    // Return publish transaction info
-    return res;
-  } finally {
-    cleanupTempToml(packagePath);
-  }
-};
+  // getPublishedPackageId throws if there isn't exactly one published package.
+  console.log(`Published package ID: ${getPublishedPackageId(res)}`);
 
-export const cleanupTempToml = (
-  packagePath: string,
-  cleanupDependencies: boolean = true
-): void => {
-  const defaultTomlPath = getDefaultTomlPath(packagePath);
-  const tempTomlPath = getTempTomlPath(packagePath);
-  if (fs.existsSync(tempTomlPath)) {
-    // Clean up Move.toml for dependencies
-    if (cleanupDependencies) {
-      const dependencyPaths =
-        getAllLocalPackageDependencyPaths(defaultTomlPath);
-      for (const path of dependencyPaths) {
-        cleanupTempToml(path);
-      }
-    }
-
-    fs.renameSync(tempTomlPath, defaultTomlPath);
-  }
-};
-
-const getPackagePathFromTomlPath = (tomlPath: string): string =>
-  tomlPath.split("/").slice(0, -1).join("/");
-
-const getTempTomlPath = (packagePath: string): string =>
-  `${packagePath}/Move.temp.toml`;
-
-const getTomlPathByNetwork = (packagePath: string, network: Network): string =>
-  `${packagePath}/Move.${network.toLowerCase()}.toml`;
-
-const resetNetworkToml = (
-  packagePath: string,
-  network: Network,
-  recursive: boolean = false
-): void => {
-  const networkTomlPath = getTomlPathByNetwork(packagePath, network);
-  const tomlStr = fs.readFileSync(networkTomlPath, "utf8").toString();
-  const toml = new MoveToml(tomlStr);
-  if (toml.isPublished()) {
-    if (recursive) {
-      const dependencyPaths =
-        getAllLocalPackageDependencyPaths(networkTomlPath);
-      for (const path of dependencyPaths) {
-        resetNetworkToml(path, network);
-      }
-    }
-
-    const updatedTomlStr = toml
-      .removeRow("package", "published-at")
-      .updateRow("addresses", getPackageNameFromPath(packagePath), "_")
-      .serialize();
-    fs.writeFileSync(networkTomlPath, updatedTomlStr, "utf8");
-  }
-};
-
-export const setupMainToml = (
-  packagePath: string,
-  network: Network,
-  checkDependencies: boolean = true,
-  isDependency: boolean = false
-): void => {
-  const defaultTomlPath = getDefaultTomlPath(packagePath);
-  const tempTomlPath = getTempTomlPath(packagePath);
-  const srcTomlPath = getTomlPathByNetwork(packagePath, network);
-
-  if (fs.existsSync(tempTomlPath)) {
-    // It's possible that this dependency has been set up by another package
-    if (isDependency) {
-      return;
-    }
-
-    throw new Error("Move.temp.toml exists, is there a publish in progress?");
-  }
-
-  // Make deploying on devnet more convenient by resetting Move.toml so we
-  // don't have to manually reset them repeatedly during local development.
-  // This is not recursive because we assume that packages are deployed bottom
-  // up.
-  if (!isDependency && network === "Devnet") {
-    resetNetworkToml(packagePath, network);
-  }
-
-  // Save default Move.toml
-  if (!fs.existsSync(defaultTomlPath)) {
-    throw new Error(
-      `Invalid package layout. Move.toml not found at ${defaultTomlPath}`
-    );
-  }
-
-  fs.renameSync(defaultTomlPath, tempTomlPath);
-
-  // Set Move.toml from appropriate network
-  if (!fs.existsSync(srcTomlPath)) {
-    throw new Error(`Move.toml for ${network} not found at ${srcTomlPath}`);
-  }
-
-  fs.copyFileSync(srcTomlPath, defaultTomlPath);
-
-  // Replace undefined addresses in base Move.toml
-  const tomlStr = fs.readFileSync(defaultTomlPath, "utf8").toString();
-  const toml = new MoveToml(tomlStr);
-  const packageName = getPackageNameFromPath(packagePath);
-  if (!isDependency) {
-    if (toml.isPublished()) {
-      throw new Error(`Package ${packageName} is already published.`);
-    } else {
-      toml.updateRow("addresses", packageName, "0x0");
-    }
-
-    fs.writeFileSync(defaultTomlPath, toml.serialize());
-  } else if (isDependency && !toml.isPublished()) {
-    throw new Error(
-      `Dependency ${packageName} is not published. Please publish it first.`
-    );
-  }
-
-  // Set up Move.toml for dependencies
-  if (checkDependencies) {
-    const dependencyPaths = getAllLocalPackageDependencyPaths(defaultTomlPath);
-    for (const path of dependencyPaths) {
-      setupMainToml(path, network, checkDependencies, true);
-    }
-  }
-};
-
-const updateNetworkToml = (
-  packagePath: string,
-  network: Network,
-  packageId: string
-): void => {
-  const tomlPath = getTomlPathByNetwork(packagePath, network);
-  const tomlStr = fs.readFileSync(tomlPath, "utf8");
-  const updatedTomlStr = new MoveToml(tomlStr)
-    .addRow("package", "published-at", packageId)
-    .updateRow("addresses", getPackageNameFromPath(packagePath), packageId)
-    .serialize();
-  fs.writeFileSync(tomlPath, updatedTomlStr, "utf8");
+  return res;
 };

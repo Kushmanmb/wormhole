@@ -72,13 +72,13 @@ func (p *PendingMessage) UnmarshalBinary(data []byte) error {
 // A pendingMessageHeap is a min-heap of [PendingMessage] and uses the heap interface
 // by implementing the methods below.
 // As a result:
-// - The heap is always sorted by timestamp.
-// - the oldest (smallest) timestamp is always the last element.
-// This allows us to pop from the heap in order to get the oldest timestamp. If
-// that value greater than whatever time threshold we specify, we know that
+// - The heap is ordered by ReleaseTime. Only the root is guaranteed to be in position; the rest
+// of the slice is not sorted.
+// - The earliest (smallest) ReleaseTime is always at index 0.
+// If the root's ReleaseTime is after whatever time threshold we specify, we know that
 // there are no other messages that need to be released because their
-// timestamps must be greater. This should allow for constant-time lookups when
-// looking for messages to release.
+// release times must be later. Checking the root takes constant time and removing it
+// takes logarithmic time.
 //
 // See: https://pkg.go.dev/container/heap#Interface
 type pendingMessageHeap []*PendingMessage
@@ -110,7 +110,8 @@ func (h *pendingMessageHeap) Push(x any) {
 	*h = append(*h, item)
 }
 
-// Pops dangerously pops a value from the heap.
+// Pop dangerously pops a value from the heap. It removes the last element of the slice, which
+// [heap.Pop] has swapped with the root before calling this method.
 func (h *pendingMessageHeap) Pop() any {
 	old := *h
 	n := len(old)
@@ -122,8 +123,14 @@ func (h *pendingMessageHeap) Pop() any {
 	return last
 }
 
-// PendingMessageQueue is a thread-safe min-heap that sorts [PendingMessage] in descending order of Timestamp.
+// PendingMessageQueue is a min-heap of [PendingMessage] ordered by ReleaseTime, with the
+// earliest ReleaseTime at the top.
 // It also prevents duplicate [MessagePublication]s from being added to the queue.
+//
+// PendingMessageQueue is safe for concurrent use by multiple goroutines. Each method is atomic,
+// but a sequence of calls is not: another goroutine can change the queue between two calls. Use
+// [PendingMessageQueue.Pop] to check readiness and remove a message in one step. Callers that must
+// keep the queue consistent with other state need their own lock around the sequence.
 type PendingMessageQueue struct {
 	// pendingMessageHeap exposes dangerous APIs as a necessary consequence of implementing [heap.Interface].
 	// Wrap it and expose only a safe API.
@@ -140,38 +147,49 @@ func NewPendingMessageQueue() *PendingMessageQueue {
 // Push adds an element to the heap. If the pending message's message ID is invalid, or if it already exists in the queue, nothing is added.
 func (q *PendingMessageQueue) Push(pMsg *PendingMessage) {
 	// noop if the message is nil or already in the queue.
-	if pMsg == nil {
+	if pMsg == nil || len(pMsg.Msg.MessageID()) < MinMsgIdLen {
 		return
-	}
-	if len(pMsg.Msg.MessageID()) < MinMsgIdLen {
-		return
-	}
-	// FetchMessagePublication acquires and releases a read lock, so we don't need to write lock
-	// until we're inside the if statement.
-	if q.FetchMessagePublication(pMsg.Msg.MessageID()) == nil {
-		q.mu.Lock()
-		heap.Push(&q.heap, pMsg)
-		defer q.mu.Unlock()
 	}
 
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	// Check for duplicates under the write lock
+	for _, existing := range q.heap {
+		if bytes.Equal(existing.Msg.MessageID(), pMsg.Msg.MessageID()) {
+			return
+		}
+	}
+	heap.Push(&q.heap, pMsg)
 }
 
-// Pop removes the last element from the heap and returns its value.
-// Returns nil if the heap is empty or if the value is not a *[PendingMessage].
-func (q *PendingMessageQueue) Pop() *PendingMessage {
-	if q.heap.Len() == 0 {
+// Pop removes and returns the message with the earliest ReleaseTime if that ReleaseTime is before
+// or equal to when. Returns nil if the queue is empty or if no message is ready.
+//
+// The readiness check and the removal happen under the same lock. Callers must not check
+// readiness separately and then remove, because another goroutine can change the queue between
+// the two calls. To remove a specific message regardless of its ReleaseTime, use [PendingMessageQueue.RemoveItem].
+func (q *PendingMessageQueue) Pop(when time.Time) *PendingMessage {
+	if q == nil {
 		return nil
 	}
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
-	last, ok := heap.Pop(&q.heap).(*PendingMessage)
-	if !ok {
+	if q.heap.Len() == 0 {
 		return nil
 	}
 
-	return last
+	// The root has the earliest ReleaseTime. If it isn't ready, no other message is.
+	ready := q.heap[0]
+	if ready.ReleaseTime.After(when) {
+		return nil
+	}
+
+	heap.Pop(&q.heap)
+
+	return ready
 }
 
 // Len returns the number of elements in the queue. Returns 0 if the queue is nil.
@@ -179,18 +197,33 @@ func (q *PendingMessageQueue) Len() int {
 	if q == nil {
 		return 0
 	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 
 	return q.heap.Len()
 }
 
-// Peek returns the element at the top of the heap without removing it.
+// Peek returns a copy of the message with the earliest ReleaseTime without removing it.
+// Returns nil if the queue is empty.
+//
+// The result is a snapshot. Another goroutine can change the queue after Peek returns, so do not
+// use the result to decide what to remove. Use [PendingMessageQueue.Pop] to remove a ready message, or
+// [PendingMessageQueue.RemoveItem] to remove a specific message.
 func (q *PendingMessageQueue) Peek() *PendingMessage {
+	if q == nil {
+		return nil
+	}
+
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
 	if q.heap.Len() == 0 {
 		return nil
 	}
-	// container/heap stores the "next" element at the first offset.
-	last := *q.heap[0]
-	return &last
+
+	// container/heap stores the root (earliest ReleaseTime) at index 0.
+	root := *q.heap[0]
+	return &root
 }
 
 // RemoveItem removes target MessagePublication with the message ID from the heap. Returns the element that was removed or nil

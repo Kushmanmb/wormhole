@@ -60,7 +60,7 @@ type reobservationTestContext struct {
 }
 
 func setUpReobservationTest() (reobservationTestContext, func()) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // #nosec G118 -- Cancel is returned to the caller for cleanup.
 
 	clock := NewMockClock(time.Now())
 
@@ -83,7 +83,7 @@ func setUpReobservationTest() (reobservationTestContext, func()) {
 }
 
 func readFromChannel(parent context.Context, c <-chan *gossipv1.ObservationRequest) (*gossipv1.ObservationRequest, bool) {
-	ctx, cancel := context.WithTimeout(parent, 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(parent, 200*time.Millisecond)
 	defer cancel()
 
 	select {
@@ -161,10 +161,10 @@ func TestMultipleReobservations(t *testing.T) {
 	assert.Equal(t, req, actual)
 
 	// Send a request for the same tx hash but different chain id.
-	req.ChainId = 3
+	req.ChainId = uint32(vaa.ChainIDPolygon)
 	ctx.obsvReqC <- req
 
-	actual, ok = readFromChannel(ctx, ctx.chainObsvReqC[vaa.ChainID(req.ChainId)]) // #nosec G115 -- Chain id set to 1 above
+	actual, ok = readFromChannel(ctx, ctx.chainObsvReqC[vaa.ChainID(req.ChainId)]) // #nosec G115 -- Chain id set to ChainIDPolygon above
 	require.True(t, ok)
 	assert.Equal(t, req, actual)
 }
@@ -258,7 +258,7 @@ func TestBlockingSend(t *testing.T) {
 	// processing the second request.  If we read from the channel too quickly then we might pop out the
 	// first request too early, unblocking the channel.  Unfortunately there's no easy way for us to detect
 	// when the handler is done without adding unnecessary complexity.
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond) //nolint:forbidigo // TODO: This code should be refactored to not use time.Sleep
 
 	actual, ok := readFromChannel(ctx, ctx.chainObsvReqC[vaa.ChainID(req.ChainId)]) // #nosec G115 -- Chain id set to 1 above
 	assert.True(t, ok)

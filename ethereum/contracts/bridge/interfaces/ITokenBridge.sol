@@ -66,6 +66,65 @@ interface ITokenBridge {
 
     event TransferRedeemed(uint16 indexed emitterChainId, bytes32 indexed emitterAddress, uint64 indexed sequence);
 
+    event PauserAddressesSet(address indexed pauser, address indexed freezer, address indexed unpauser);
+
+    event Paused(address indexed by, uint256 pauseExpiry);
+
+    event Frozen(address indexed by, uint256 pauseExpiry);
+
+    event Unpaused(address indexed by);
+
+    event UnpauseExpired(address indexed by);
+
+    // Pauser-related (declared in Bridge contract).
+    error BridgePaused();
+    error NotPauser();
+    error NotUnpauser();
+    error NotFreezer();
+    error NotPaused();
+    error NotExpired();
+    error PauseNotExtended();
+
+    // Transfer/wrap-related (declared in Bridge contract).
+    error InsufficientFee();
+    error FeeExceedsAmount();
+    error InvalidEmitter();
+    error WrappedAssetNotFound();
+    error OnlyForeignTokens();
+    error WrappedAssetAlreadyExists();
+    error InvalidEVMAddress();
+    error InvalidSender();
+    error TransferAlreadyCompleted();
+    error InvalidTargetChain();
+    error OnlyWETH();
+    error OutstandingExceedsMax();
+    error InvalidAssetMeta();
+    error InvalidTransferPayload();
+    error InvalidPayloadId();
+
+    // Governance-related (declared in BridgeGovernance contract).
+    error InvalidChainId();
+    error ChainAlreadyRegistered();
+    error WrongChainId();
+    error WrongLength();
+    error WrongModule();
+    error WrongAction();
+    error InvalidFork();
+    error NotAFork();
+    error InvalidEVMChain();
+    error WrongGovernanceChain();
+    error WrongGovernanceContract();
+    error GovernanceActionConsumed();
+    error InitializeFailed(bytes reason);
+    /// @notice Reverts when a `SetPauserAddresses` payload encodes a pauser/freezer/unpauser length
+    ///         that is neither 0 (unassigned) nor 20 (the EVM native address size).
+    error InvalidAddressLength();
+
+    // Setter / initializer (declared in BridgeSetters / BridgeImplementation).
+    error InvalidImplementationAddress();
+    error InvalidEvmChainId();
+    error AlreadyInitialized();
+
     function _parseTransferCommon(bytes memory encoded) external pure returns (Transfer memory transfer);
 
     function attestToken(address tokenAddress, uint32 nonce) external payable returns (uint64 sequence);
@@ -136,6 +195,16 @@ interface ITokenBridge {
 
     function finality() external view returns (uint8);
 
+    function pauser() external view returns (address);
+
+    function freezer() external view returns (address);
+
+    function unpauser() external view returns (address);
+
+    function paused() external view returns (bool);
+
+    function pauseExpiry() external view returns (uint64);
+
     function implementation() external view returns (address);
 
     function initialize() external;
@@ -145,6 +214,16 @@ interface ITokenBridge {
     function upgrade(bytes memory encodedVM) external;
 
     function submitRecoverChainId(bytes memory encodedVM) external;
+
+    function submitSetPauserAddresses(bytes memory encodedVM) external;
+
+    function pause() external;
+
+    function freeze() external;
+
+    function unpause() external;
+
+    function unpauseExpired() external;
 
     function parseRegisterChain(bytes memory encoded) external pure returns (RegisterChain memory chain);
 

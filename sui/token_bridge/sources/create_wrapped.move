@@ -46,7 +46,7 @@ module token_bridge::create_wrapped {
     use token_bridge::wrapped_asset::{Self};
 
     #[test_only]
-    use token_bridge::version_control::{Self, V__0_2_0 as V__CURRENT};
+    use token_bridge::version_control::{Self, V__0_3_0 as V__CURRENT};
 
     /// Failed one-time witness verification.
     const E_BAD_WITNESS: u64 = 0;
@@ -81,7 +81,7 @@ module token_bridge::create_wrapped {
         let setup = prepare_registration_internal(witness, decimals, ctx);
 
         // Also make sure that this witness module name is literally "coin".
-        let module_name = type_name::get_module(&type_name::get<CoinType>());
+        let module_name = type_name::module_string(&type_name::with_defining_ids<CoinType>());
         assert!(
             ascii::into_bytes(module_name) == COIN_MODULE_NAME,
             E_INVALID_COIN_MODULE_NAME
@@ -90,7 +90,7 @@ module token_bridge::create_wrapped {
         setup
     }
 
-    #[allow(lint(share_owned))]
+    #[allow(lint(share_owned), deprecated_usage)]
     /// This function performs the bulk of `prepare_registration`, except
     /// checking the module name. This separation is useful for testing.
     fun prepare_registration_internal<CoinType: drop, Version>(
@@ -160,6 +160,7 @@ module token_bridge::create_wrapped {
         // created using the current package.
         let latest_only =
             state::assert_latest_only_specified<Version>(token_bridge_state);
+        state::assert_not_paused(token_bridge_state);
 
         let WrappedAssetSetup {
             id,
@@ -196,6 +197,7 @@ module token_bridge::create_wrapped {
     ) {
         // This capability ensures that the current build version is used.
         let latest_only = state::assert_latest_only(token_bridge_state);
+        state::assert_not_paused(token_bridge_state);
 
         // Deserialize to `AssetMeta`.
         let token_meta = asset_meta::deserialize(vaa::take_payload(msg));
@@ -216,13 +218,13 @@ module token_bridge::create_wrapped {
     public fun incomplete_metadata<CoinType>(
         coin_meta: &CoinMetadata<CoinType>
     ): bool {
-        use std::string::{bytes};
+        use std::string::{as_bytes};
         use std::vector::{is_empty};
 
         (
             is_empty(ascii::as_bytes(&coin::get_symbol(coin_meta))) &&
-            is_empty(bytes(&coin::get_name(coin_meta))) &&
-            is_empty(bytes(&coin::get_description(coin_meta))) &&
+            is_empty(as_bytes(&coin::get_name(coin_meta))) &&
+            is_empty(as_bytes(&coin::get_description(coin_meta))) &&
             std::option::is_none(&coin::get_icon_url(coin_meta))
         )
     }
@@ -282,7 +284,6 @@ module token_bridge::create_wrapped {
 module token_bridge::create_wrapped_tests {
     use sui::coin::{Self};
     use sui::test_scenario::{Self};
-    use sui::test_utils::{Self};
     use sui::tx_context::{Self};
     use wormhole::wormhole_scenario::{parse_and_verify_vaa};
 
@@ -301,7 +302,7 @@ module token_bridge::create_wrapped_tests {
     };
     use token_bridge::token_registry::{Self};
     use token_bridge::vaa::{Self};
-    use token_bridge::version_control::{V__0_2_0 as V__CURRENT};
+    use token_bridge::version_control::{V__0_3_0 as V__CURRENT};
     use token_bridge::wrapped_asset::{Self};
 
     struct NOT_A_WITNESS has drop {}
@@ -322,7 +323,7 @@ module token_bridge::create_wrapped_tests {
             );
 
         // Clean up.
-        test_utils::destroy(wrapped_asset_setup);
+        std::unit_test::destroy(wrapped_asset_setup);
 
         abort 42
     }
@@ -344,7 +345,7 @@ module token_bridge::create_wrapped_tests {
             );
 
         // Clean up.
-        test_utils::destroy(wrapped_asset_setup);
+        std::unit_test::destroy(wrapped_asset_setup);
 
         abort 42
     }

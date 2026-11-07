@@ -843,6 +843,20 @@ contract TestGovernance is TestUtils {
         assertEq(true, proxied.governanceActionIsConsumed(hash));
     }
 
+    function testSubmitTransferFees_Revert_ZeroRecipient() public {
+        vm.deal(address(proxied), 1);
+        bytes memory payload = payloadSubmitTransferFees(MODULE, CHAINID, 1, bytes32(0));
+        (bytes memory vaa, bytes32 hash) = validVm(
+            0, 1000, 1001, 1, governanceContract, 0, 2, payload, testGuardian
+        );
+
+        vm.expectRevert("recipient is zero address");
+        proxied.submitTransferFees(vaa);
+
+        assertEq(address(proxied).balance, 1);
+        assertFalse(proxied.governanceActionIsConsumed(hash));
+    }
+
     function testSubmitTransferFees_Revert_InvalidModule(
         bytes32 storageSlot,
         uint64 evmChainId,

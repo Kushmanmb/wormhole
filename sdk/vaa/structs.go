@@ -51,8 +51,22 @@ type (
 	// Action of a VAA
 	Action uint8
 
-	// Address is a Wormhole protocol address, it contains the native chain's address. If the address data type of a
-	// chain is < 32bytes the value is zero-padded on the left.
+	// Address is a Wormhole protocol address otherwise referred to as a "wormhole normalized address." It typically
+	// contains the native chain's address for chains where the addresses are <= 32 bytes.
+	//
+	// If the address data type of a chain is < 32 bytes, the value is zero-padded on the left.
+	//
+	// For chains with addresses that support lengths greater than 32 bytes, this type MAY be used
+	// to represent an on-chain address by hashing it using an algorithm like sha256.
+	//
+	// For chains with variable length addresses, users MUST use this type consistently such that addresses
+	// can be uniquely identified. For example, if a chain supports addresses between length 2 and 64, this type
+	// should always encode addresses for that chain as sha256 digests. This helps to avoid a situation where
+	// addresses with length < 32 have zero-padded EVM-like addresses, but larger addresses on the same chain
+	// are represented as digests.
+	//
+	// Other uses of this type are NOT RECOMMENDED given that they can overload the semantic meaning of this field
+	// which already does a lot of conceptual work across disparate blockchain implementations.
 	Address [32]byte
 
 	// Signature of a single guardian
@@ -189,6 +203,42 @@ func KnownChainIDFromNumber[N number](n N) (ChainID, error) {
 	return ChainIDUnset, fmt.Errorf("no known ChainID for input %d", n)
 }
 
+// TimeFromUnix converts an integer of any signed or unsigned type into a [time.Time], assuming the value
+// represents Unix seconds.
+// This function can be used to convert on-chain values that represent timestamps into Go's Time type.
+// For example, message publication events parsed from a Wormhole core contract might encode the timestamp in a uint64.
+// This function can parse that value into the wire-format value used by a VAA, returning an error if the on-chain value
+// does not represent a valid uint32 timestamp value.
+//
+// Returns an error if the value is negative or exceeds [math.MaxUint32], which
+// is the Wormhole protocol's on-wire timestamp precision. See also [VAA.serializeBody]
+func TimeFromUnix[N number](n N) (time.Time, error) {
+	if n < 0 {
+		return time.Time{}, fmt.Errorf("timestamp cannot be negative but got %d", n)
+	}
+	// Use intermediate uint64 to safely handle conversion and allow comparison with MaxUint32.
+	val := uint64(n)
+	if val > uint64(math.MaxUint32) {
+		return time.Time{}, fmt.Errorf("timestamp must be less than or equal to %d but got %d", math.MaxUint32, n)
+	}
+	return time.Unix(int64(n), 0), nil
+}
+
+// TimeFromUnixUint32 converts a uint32 of Unix seconds into a [time.Time].
+// Unlike [TimeFromUnix], it returns no error: every uint32 is already a valid
+// on-wire Wormhole timestamp (0..math.MaxUint32), so the range checks cannot fail.
+//
+// ANTI-PATTERN: only call this with a value whose type is already uint32. Never
+// convert another type to uint32 to reach this function, e.g.
+// TimeFromUnixUint32(uint32(x)). For a signed value the conversion turns a
+// negative number into a large positive one, and for a wider unsigned value it
+// drops the high bits; either way it silently produces a wrong timestamp and
+// bypasses the validation [TimeFromUnix] performs. For any non-uint32 value,
+// call [TimeFromUnix] and check the error.
+func TimeFromUnixUint32(n uint32) time.Time {
+	return time.Unix(int64(n), 0)
+}
+
 // StringToKnownChainID converts from a string representation of a chain into a ChainID that is registered in the SDK.
 // The argument can be either a numeric string representation of a number or a known chain name such as "solana".
 // Inputs of unknown ChainIDs, including 0, will result in an error.
@@ -216,8 +266,7 @@ const (
 	ChainIDSolana ChainID = 1
 	// ChainIDEthereum is the ChainID of Ethereum
 	ChainIDEthereum ChainID = 2
-	// WARNING: ChainIDTerra is only supported in devnet / Tilt.
-	ChainIDTerra ChainID = 3
+	// OBSOLETE: ChainIDTerra ChainID = 3
 	// ChainIDBSC is the ChainID of Binance Smart Chain
 	ChainIDBSC ChainID = 4
 	// ChainIDPolygon is the ChainID of Polygon
@@ -228,8 +277,7 @@ const (
 	// ChainIDAlgorand is the ChainID of Algorand
 	ChainIDAlgorand ChainID = 8
 	// OBSOLETE: ChainIDAurora ChainID = 9
-	// ChainIDFantom is the ChainID of Fantom
-	ChainIDFantom ChainID = 10
+	// OBSOLETE: ChainIDFantom ChainID = 10
 	// OBSOLETE: ChainIDKarura ChainID = 11
 	// OBSOLETE: ChainIDAcala ChainID = 12
 	// ChainIDKlaytn is the ChainID of Klaytn
@@ -271,13 +319,10 @@ const (
 	ChainIDSei ChainID = 32
 	// ChainIDRootstock is the ChainID of Rootstock
 	ChainIDRootstock ChainID = 33
-	// ChainIDScroll is the ChainID of Scroll
-	ChainIDScroll ChainID = 34
-	// ChainIDMantle is the ChainID of Mantle
-	ChainIDMantle ChainID = 35
+	// OBSOLETE: ChainIDScroll ChainID = 34
+	// OBSOLETE: ChainIDMantle ChainID = 35
 	// OBSOLETE: ChainIDBlast ChainID = 36
-	// ChainIDXLayer is the ChainID of XLayer
-	ChainIDXLayer ChainID = 37
+	// OBSOLETE: ChainIDXLayer ChainID = 37
 	// ChainIDLinea is the ChainID of Linea
 	ChainIDLinea ChainID = 38
 	// ChainIDBerachain is the ChainID of Berachain
@@ -337,6 +382,20 @@ const (
 	ChainIDXRPL ChainID = 66
 	// ChainIDZeroGravity is the ChainID of ZeroGravity,
 	ChainIDZeroGravity ChainID = 67
+	// ChainIDTempo is the ChainID of Tempo
+	ChainIDTempo ChainID = 68
+	// ChainIDNexus is the ChainID of Nexus
+	ChainIDNexus ChainID = 69
+	// ChainIDTron is the ChainID of Tron
+	ChainIDTron ChainID = 70
+	// ChainIDArc is the ChainID of Arc
+	ChainIDArc ChainID = 71
+	// ChainIDRobinhoodChain is the ChainID of Robinhood Chain
+	ChainIDRobinhoodChain ChainID = 72
+	// ChainIDHydration is the ChainID of Hydration
+	ChainIDHydration ChainID = 73
+	// ChainIDElysium is the ChainID of Elysium
+	ChainIDElysium ChainID = 74
 
 	// ChainIDWormchain is the ChainID of Wormchain and is in its own range.
 	ChainIDWormchain ChainID = 3104

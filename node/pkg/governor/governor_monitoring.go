@@ -144,6 +144,9 @@ func (gov *ChainGovernor) Reload() (string, error) {
 		ce.transfers = nil
 		ce.pending = nil
 	}
+	// Clear the in memory map of seen messages so that we can reprocess them from the database. This is important because
+	// the in memory map is used to prevent duplicate processing of messages, and we want to reprocess all messages from the database.
+	gov.msgsSeen = make(map[string]bool)
 
 	if err := gov.loadFromDBAlreadyLocked(); err != nil {
 		gov.logger.Error("failed to load from the database", zap.Error(err))
@@ -342,7 +345,7 @@ func (gov *ChainGovernor) GetAvailableNotionalByChain() (resp []*publicrpcv1.Gov
 					zap.Uint64("dailyLimit", ce.dailyLimit),
 					zap.Int64("netUsage", netUsage),
 					zap.Error(err))
-			} else if uint64(netUsage) > ce.dailyLimit {
+			} else if uint64(netUsage) > ce.dailyLimit { // #nosec G115 -- netUsage is checked to be non-negative above
 				gov.logger.Warn("GetAvailableNotionalByChain: net value for chain exceeds daily limit even though flow cancel is disabled",
 					zap.String("chainID", chainId.String()),
 					zap.Uint64("dailyLimit", ce.dailyLimit),
@@ -512,12 +515,16 @@ func (gov *ChainGovernor) CollectMetrics(ctx context.Context, hb *gossipv1.Heart
 			continue
 		}
 
-		if n.Id > math.MaxUint16 {
-			gov.logger.Error("CollectMetrics: chain id is not a valid uint16", zap.Uint32("chain_id", n.Id))
+		// The Governor is only concerned with registered chains. However, it may be possible that Guardians
+		// are operating with different versions, or may have pending messages from the last 24h for a chain
+		// that was just deprecated.
+		// In any case, any uint16 value is accepted here as the worst-case scenario is that the Guardian's
+		// heartbeat will contain data about a chain ID being unset here.
+		chain, err := vaa.ChainIDFromNumber[uint32](n.Id)
+		if err != nil {
+			gov.logger.Error("CollectMetrics: chain id is not valid", zap.Uint32("chain_id", n.Id), zap.Error(err))
 			continue
 		}
-
-		chain := vaa.ChainID(n.Id)
 
 		chainId := fmt.Sprint(n.Id)
 		enabled := "0"

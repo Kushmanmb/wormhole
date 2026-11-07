@@ -7,7 +7,14 @@ sed -i '/module token_bridge::transfer_tokens/r /tmp/transfer_tokens_unsafe.move
 
 # Configurations, such as the RPC endpoint and output files for various pieces of information collected for the
 # tests to be performed.
+# RPC is the JSON-RPC endpoint. It is used here only by the `worm`/`sui` CLI for deployment and
+# transfers (the gRPC migration covers the transfer verifier, not the Sui CLI). Note that Sui's
+# JSON-RPC is deprecated upstream with full removal on 2026-07-31, so this will need revisiting
+# (the CLI's replacement interface is determined by the bundled Sui version).
 RPC=http://sui:9000
+# GRPC_RPC is the gRPC endpoint used by the transfer verifier (--suiRPC). The Sui node serves
+# gRPC multiplexed on the JSON-RPC port; it is exposed as `sui:443` by the devnet service.
+GRPC_RPC=sui:443
 SETUP_DEVNET_OUTPUT_PATH=/tmp/setup-devnet-output.txt
 EXAMPLE_COIN_TX_OUTPUT_PATH=/tmp/setup-example-coin-tx-output.txt
 
@@ -47,24 +54,39 @@ get_coin_information() {
     local treasury_cap_object_id=`
         jq -r --arg COIN $coin_name --arg INFO_TYPE $coin_info_type '.objectChanges[] |
             select(
-                .objectType != null and 
-                (.objectType | contains($INFO_TYPE)) and 
+                .objectType != null and
+                (.objectType | contains($INFO_TYPE)) and
                 (.objectType | contains($COIN))
-            ) | 
+            ) |
             .objectId' $filename`
 
     echo $treasury_cap_object_id
 }
 
 # Get the transaction digest of the example coin deployment.
-coin_deployment_digest=`cat $SETUP_DEVNET_OUTPUT_PATH | grep "Deploying example coins" -A1 | grep "digest" | cut -d' ' -f3`
+# The digest line follows "Deploying example coins" but there may be many lines of test-publish JSON in between
+coin_deployment_digest=`cat $SETUP_DEVNET_OUTPUT_PATH | sed -n '/Deploying example coins/,$p' | grep "^Transaction digest" | head -1 | cut -d' ' -f3`
+echo " - coin_deployment_digest    = $coin_deployment_digest"
+if [ -z "$coin_deployment_digest" ]; then
+    echo "ERROR: Failed to get coin deployment digest. Setup output:"
+    cat $SETUP_DEVNET_OUTPUT_PATH
+    exit 1
+fi
 # Retrieve the transaction block.
-sui client tx-block $coin_deployment_digest --json > $EXAMPLE_COIN_TX_OUTPUT_PATH
+sui client tx-block --json $coin_deployment_digest > $EXAMPLE_COIN_TX_OUTPUT_PATH
 # Read the package ID of the coin package that holds the coins.
 coin_package_id=`jq -r '.objectChanges[] | select(.type != null and .type == "published") | .packageId' $EXAMPLE_COIN_TX_OUTPUT_PATH`
+echo " - coin_package_id           = $coin_package_id"
+if [ -z "$coin_package_id" ] || [ "$coin_package_id" = "null" ]; then
+    echo "ERROR: Failed to get coin package ID. TX output:"
+    cat $EXAMPLE_COIN_TX_OUTPUT_PATH
+    exit 1
+fi
 # Get the TreasuryCap and CoinMetadata object IDs
 treasury_cap_10=`get_coin_information $EXAMPLE_COIN_TX_OUTPUT_PATH COIN_10 TreasuryCap`
 coin_metadata_10=`get_coin_information $EXAMPLE_COIN_TX_OUTPUT_PATH COIN_10 CoinMetadata`
+echo " - treasury_cap_10           = $treasury_cap_10"
+echo " - coin_metadata_10          = $coin_metadata_10"
 
 # A helper function to attest a native token on the token bridge. This effectively registers a coin on Sui as a
 # native asset on the token bridge.
@@ -82,10 +104,27 @@ attest_token() {
 }
 
 echo "[*] adding the COIN_10 coin to the token bridge."
-res=`attest_token $coin_package_id::coin_10::COIN_10 $coin_metadata_10 1u32`
+# Retry attest_token with backoff in case of transient object version conflicts
+ATTEST_MAX_RETRIES=5
+for attempt in $(seq 1 $ATTEST_MAX_RETRIES); do
+    res=$(attest_token $coin_package_id::coin_10::COIN_10 $coin_metadata_10 1u32 2>&1)
+    if echo "$res" | grep -q "Error"; then
+        if [ $attempt -eq $ATTEST_MAX_RETRIES ]; then
+            echo " [-] attest_token failed after $ATTEST_MAX_RETRIES attempts: $res"
+            exit 1
+        fi
+        echo " [!] attest_token attempt $attempt failed, retrying in ${attempt}s..."
+        sleep $attempt
+    else
+        echo " [+] attest_token succeeded on attempt $attempt"
+        break
+    fi
+done
+# Wait for token registration to be processed before transfers
+sleep 2
 
 # mint_and_transfer_token is a helper function that mints an `amount` of tokens to the caller, and then transfers
-# those tokens out via the token bridge. 
+# those tokens out via the token bridge.
 # This is used for legitimate token bridge transfers.
 mint_and_transfer_token() {
     local treasury_cap=$1
@@ -107,7 +146,7 @@ mint_and_transfer_token() {
         --move-call $token_bridge_package_id::transfer_tokens::transfer_tokens "<$coin_type>" @$token_bridge_state prepare_transfer_result.0 \
         --assign message_ticket \
         --move-call $core_bridge_package_id::publish_message::publish_message @$core_bridge_state empty_gas_coin message_ticket @0x06 \
-        --transfer-objects sender [prepare_transfer_result.1] \
+        --transfer-objects [prepare_transfer_result.1] sender \
         --gas-budget 10000000
 }
 
@@ -138,7 +177,7 @@ mint_and_transfer_unsafe_imbalanced() {
         --move-call $token_bridge_package_id::transfer_tokens::transfer_tokens "<$coin_type>" @$token_bridge_state prepare_transfer_result.0 \
         --assign message_ticket \
         --move-call $core_bridge_package_id::publish_message::publish_message @$core_bridge_state empty_gas_coin message_ticket @0x06 \
-        --transfer-objects sender [prepare_transfer_result.1] \
+        --transfer-objects [prepare_transfer_result.1] sender \
         --gas-budget 10000000
 }
 
@@ -166,37 +205,28 @@ transfer_without_deposit_unsafe() {
         --move-call $token_bridge_package_id::transfer_tokens::transfer_tokens_unsafe "<$coin_type>" @$token_bridge_state prepare_transfer_result.0 \
         --assign message_ticket \
         --move-call $core_bridge_package_id::publish_message::publish_message @$core_bridge_state empty_gas_coin message_ticket.0 @0x06 \
-        --transfer-objects sender [prepare_transfer_result.1] \
-        --transfer-objects sender [message_ticket.1] \
+        --transfer-objects [prepare_transfer_result.1] sender \
+        --transfer-objects [message_ticket.1] sender \
         --gas-budget 10000000
 }
 
-echo "[*] running testcases pre-start" # these tests are aimed at the suiProcessInitialEvents flag
-# testcase 1 - do a normal token bridge transfer
-res=`mint_and_transfer_token $treasury_cap_10 $coin_package_id::coin_10::COIN_10 100_0000000000`
-sleep 1
-
-# testcase 2 - do a token bridge transfer where the deposited amount does not cover the full bridge amount
-res=`mint_and_transfer_unsafe_imbalanced $treasury_cap_10 $coin_package_id::coin_10::COIN_10 100_0000000000 200_0000000000`
-sleep 1
-
-# testcase 3 - do a token bridge transfer where the token is not deposited at all
-resp=`transfer_without_deposit_unsafe $treasury_cap_10 $coin_package_id::coin_10::COIN_10 200_0000000000`
-sleep 1
-
+# The verifier consumes events via a forward-only gRPC subscription, so it is started before any
+# test transfers are made; transfers performed afterwards are then observed live and verified.
 echo "[*] starting the sui transfer verifier"
 /guardiand transfer-verifier \
     sui \
-    --suiRPC "${RPC}" \
+    --suiRPC "${GRPC_RPC}" \
     --suiEnvironment=devnet \
     --suiCoreBridgePackageId $core_bridge_package_id \
     --suiTokenBridgeEmitter $token_bridge_emitter_cap \
     --suiTokenBridgePackageId $token_bridge_package_id \
     --logLevel=debug \
-    --suiProcessOnChainEvents \
     2> /tmp/error.log &
 
-echo "[*] running testcases post-start"
+# Give the verifier a moment to establish its subscription before generating events.
+sleep 5
+
+echo "[*] running testcases"
 
 # testcase 1 - do a normal token bridge transfer
 res=`mint_and_transfer_token $treasury_cap_10 $coin_package_id::coin_10::COIN_10 100_0000000000`
@@ -210,17 +240,17 @@ sleep 1
 res=`transfer_without_deposit_unsafe $treasury_cap_10 $coin_package_id::coin_10::COIN_10 200_0000000000`
 sleep 10
 
-# There should be two of each test - one for pre-start and one for post-start.
+# There should be one of each test, all observed live after the verifier started.
 echo "[*] verifying that tests succeeded"
 
 cat /tmp/error.log
 
-if [ $(cat /tmp/error.log | grep "bridge transfer requested for more tokens than were deposited" | wc -l) -ne 2 ]; then
+if [ $(cat /tmp/error.log | grep "bridge transfer requested for more tokens than were deposited" | wc -l) -ne 1 ]; then
     echo " [-] amount out > amount in test failed"
     exit 1
 fi
 
-if [ $(cat /tmp/error.log | grep "bridge transfer requested for tokens that were never deposited" | wc -l) -ne 2 ]; then
+if [ $(cat /tmp/error.log | grep "bridge transfer requested for tokens that were never deposited" | wc -l) -ne 1 ]; then
     echo " [-] amount in == 0 test failed"
     exit 1
 fi

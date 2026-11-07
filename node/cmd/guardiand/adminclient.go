@@ -3,13 +3,15 @@ package guardiand
 import (
 	"bufio"
 	"context"
-	"encoding/csv"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"math"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -36,6 +38,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 
 	nodev1 "github.com/certusone/wormhole/node/pkg/proto/node/v1"
+
+	"google.golang.org/protobuf/proto"
 )
 
 var (
@@ -79,9 +83,8 @@ func init() {
 	NotaryListDelayedMessages.Flags().AddFlagSet(pf)
 	NotaryListBlackholedMessages.Flags().AddFlagSet(pf)
 	PurgePythNetVaasCmd.Flags().AddFlagSet(pf)
-	SignExistingVaaCmd.Flags().AddFlagSet(pf)
-	SignExistingVaasFromCSVCmd.Flags().AddFlagSet(pf)
 	GetAndObserveMissingVAAs.Flags().AddFlagSet(pf)
+	BroadcastDelegateSignatures.Flags().AddFlagSet(pf)
 
 	adminClientSignWormchainAddressFlags := pflag.NewFlagSet("adminClientSignWormchainAddressFlags", pflag.ContinueOnError)
 	unsafeDevnetMode = adminClientSignWormchainAddressFlags.Bool("unsafeDevMode", false, "Run in unsafe devnet mode")
@@ -115,10 +118,9 @@ func init() {
 	AdminCmd.AddCommand(NotaryListBlackholedMessages)
 	// Other commands
 	AdminCmd.AddCommand(PurgePythNetVaasCmd)
-	AdminCmd.AddCommand(SignExistingVaaCmd)
-	AdminCmd.AddCommand(SignExistingVaasFromCSVCmd)
 	AdminCmd.AddCommand(Keccak256Hash)
 	AdminCmd.AddCommand(GetAndObserveMissingVAAs)
+	AdminCmd.AddCommand(BroadcastDelegateSignatures)
 }
 
 var AdminCmd = &cobra.Command{
@@ -210,20 +212,6 @@ var PurgePythNetVaasCmd = &cobra.Command{
 	Args:  cobra.RangeArgs(1, 2),
 }
 
-var SignExistingVaaCmd = &cobra.Command{
-	Use:   "sign-existing-vaa [VAA] [NEW_GUARDIANS] [NEW_GUARDIAN_SET_INDEX]",
-	Short: "Signs an existing VAA for a new guardian set using the local guardian key. This only works if the new VAA would have quorum.",
-	Run:   runSignExistingVaa,
-	Args:  cobra.ExactArgs(3),
-}
-
-var SignExistingVaasFromCSVCmd = &cobra.Command{
-	Use:   "sign-existing-vaas-csv [IN_FILE] [OUT_FILE] [NEW_GUARDIANS] [NEW_GUARDIAN_SET_INDEX]",
-	Short: "Signs a CSV [VAA_ID,VAA_HEX] of existing VAAs for a new guardian set using the local guardian key and writes it to a new CSV. VAAs that don't have quorum on the new set will be dropped.",
-	Run:   runSignExistingVaasFromCSV,
-	Args:  cobra.ExactArgs(4),
-}
-
 var DumpRPCs = &cobra.Command{
 	Use:   "dump-rpcs",
 	Short: "Displays the RPCs in use by the guardian",
@@ -233,9 +221,16 @@ var DumpRPCs = &cobra.Command{
 
 var GetAndObserveMissingVAAs = &cobra.Command{
 	Use:   "get-and-observe-missing-vaas [URL] [API_KEY]",
-	Short: "Get the list of missing VAAs from a cloud function and try to reobserve them.",
+	Short: "Get the missing VAAs this guardian should observe from URL, sending API_KEY as a bearer token, and try to reobserve them.",
 	Run:   runGetAndObserveMissingVAAs,
 	Args:  cobra.ExactArgs(2),
+}
+
+var BroadcastDelegateSignatures = &cobra.Command{
+	Use:   "broadcast-delegate-signatures [VAA_ID]",
+	Short: "Fetch delegate signatures from wormholescan and broadcast them on the delegated attestation topic",
+	Run:   runBroadcastDelegateSignatures,
+	Args:  cobra.ExactArgs(1),
 }
 
 var Keccak256Hash = &cobra.Command{
@@ -317,8 +312,12 @@ var (
 	}
 )
 
-func getAdminClient(ctx context.Context, addr string) (*grpc.ClientConn, nodev1.NodePrivilegedServiceClient, error) {
-	conn, err := grpc.DialContext(ctx, fmt.Sprintf("unix:///%s", addr), grpc.WithTransportCredentials(insecure.NewCredentials()))
+func getAdminClient(addr string) (*grpc.ClientConn, nodev1.NodePrivilegedServiceClient, error) {
+
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+	conn, err := grpc.NewClient(fmt.Sprintf("unix:///%s", addr), opts...)
 
 	if err != nil {
 		log.Fatalf("failed to connect to %s: %v", addr, err)
@@ -328,8 +327,12 @@ func getAdminClient(ctx context.Context, addr string) (*grpc.ClientConn, nodev1.
 	return conn, c, err
 }
 
-func getPublicRPCServiceClient(ctx context.Context, addr string) (*grpc.ClientConn, publicrpcv1.PublicRPCServiceClient, error) {
-	conn, err := grpc.DialContext(ctx, fmt.Sprintf("unix:///%s", addr), grpc.WithTransportCredentials(insecure.NewCredentials()))
+func getPublicRPCServiceClient(addr string) (*grpc.ClientConn, publicrpcv1.PublicRPCServiceClient, error) {
+
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	}
+	conn, err := grpc.NewClient(fmt.Sprintf("unix:///%s", addr), opts...)
 
 	if err != nil {
 		log.Fatalf("failed to connect to %s: %v", addr, err)
@@ -373,7 +376,7 @@ func runInjectGovernanceVAA(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -401,7 +404,13 @@ func runInjectGovernanceVAA(cmd *cobra.Command, args []string) {
 }
 
 func runFindMissingMessages(cmd *cobra.Command, args []string) {
-	chainID, err := strconv.Atoi(args[0])
+	// Effectively allow any uint16 value for ChainID here. A Guardian may want to find missing messages
+	// for deprecated chains, so we don't use [`vaa.StringToKnownChainID`] here.
+	//
+	// This value is later converted to uint32 for use in protobuf, but before that
+	// we should make sure it fits into uint16 to disallow numbers > max.Uint16
+	// from being serialized.
+	chainId, err := strconv.ParseUint(args[0], 10, 16)
 	if err != nil {
 		log.Fatalf("invalid chain ID: %v", err)
 	}
@@ -411,18 +420,14 @@ func runFindMissingMessages(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
 	defer conn.Close()
 
-	if chainID > math.MaxUint16 {
-		log.Fatalf("chain ID is not a valid 16 bit unsigned integer: %v", err)
-	}
-
 	msg := nodev1.FindMissingMessagesRequest{
-		EmitterChain:   uint32(chainID), // #nosec G115 -- This conversion is checked above
+		EmitterChain:   uint32(chainId),
 		EmitterAddress: emitterAddress,
 		RpcBackfill:    *shouldBackfill,
 		BackfillNodes:  sdk.PublicRPCEndpoints,
@@ -448,12 +453,12 @@ func runDumpVAAByMessageID(cmd *cobra.Command, args []string) {
 	if len(parts) != 3 {
 		log.Fatalf("invalid message ID: %s", args[0])
 	}
-	chainID, err := strconv.ParseUint(parts[0], 10, 32)
+	// Parse string ChainID as uint16 to ensure it fits the vaa.ChainID type.
+	// There is no "known" check here as Guardians may want to dump messages
+	// even for deprecated chains.
+	chainId, err := strconv.ParseUint(parts[0], 10, 16)
 	if err != nil {
 		log.Fatalf("invalid chain ID: %v", err)
-	}
-	if chainID > math.MaxUint16 {
-		log.Fatalf("chain id must not exceed the max uint16: %v", chainID)
 	}
 	emitterAddress := parts[1]
 	seq, err := strconv.ParseUint(parts[2], 10, 64)
@@ -464,7 +469,7 @@ func runDumpVAAByMessageID(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getPublicRPCServiceClient(ctx, *clientSocketPath)
+	conn, c, err := getPublicRPCServiceClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get public RPC service client: %v", err)
 	}
@@ -472,7 +477,7 @@ func runDumpVAAByMessageID(cmd *cobra.Command, args []string) {
 
 	msg := publicrpcv1.GetSignedVAARequest{
 		MessageId: &publicrpcv1.MessageID{
-			EmitterChain:   publicrpcv1.ChainID(chainID),
+			EmitterChain:   publicrpcv1.ChainID(chainId),
 			EmitterAddress: emitterAddress,
 			Sequence:       seq,
 		},
@@ -514,7 +519,7 @@ func runSendObservationRequest(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -556,7 +561,7 @@ func runReobserveWithEndpoint(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -581,7 +586,7 @@ func runDumpRPCs(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -599,7 +604,7 @@ func runDumpRPCs(cmd *cobra.Command, args []string) {
 
 func runGetAndObserveMissingVAAs(cmd *cobra.Command, args []string) {
 	url := args[0]
-	if !strings.HasPrefix(url, "https://") {
+	if valid := common.ValidateURL(url, []string{"https"}); !valid {
 		log.Fatalf("invalid url: %s", url)
 	}
 	apiKey := args[1]
@@ -609,7 +614,7 @@ func runGetAndObserveMissingVAAs(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -627,11 +632,330 @@ func runGetAndObserveMissingVAAs(cmd *cobra.Command, args []string) {
 	fmt.Println(resp.GetResponse())
 }
 
+// wormholescanDelegateObservation represents a delegate observation from the wormholescan API.
+type wormholescanDelegateObservation struct {
+	Sequence               uint64 `json:"sequence"`
+	EmitterChain           uint16 `json:"emitterChain"`
+	EmitterAddr            string `json:"emitterAddr"`
+	MessagePublicationHash string `json:"hash"`
+	TxHash                 string `json:"txHash"`
+	Payload                string `json:"payload"`
+	DelegatedGuardianAddr  string `json:"delegatedGuardianAddr"`
+	Signature              string `json:"signature"`
+	Nonce                  uint32 `json:"nonce"`
+	ConsistencyLevel       uint8  `json:"consistencyLevel"`
+	Timestamp              string `json:"timestamp"`
+	SentTimestamp          string `json:"sentTimestamp"`
+	Unreliable             bool   `json:"unreliable"`
+	IsReobservation        bool   `json:"isReobservation"`
+	VerificationState      uint8  `json:"verificationState"`
+}
+
+// delegateObservationVAAHash computes the VAA body hash (double Keccak256) from a delegate observation's fields.
+func delegateObservationVAAHash(obs *wormholescanDelegateObservation) (string, error) {
+	ts, err := time.Parse(time.RFC3339, obs.Timestamp)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse timestamp: %v", err)
+	}
+	payload, err := base64.StdEncoding.DecodeString(obs.Payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode payload: %v", err)
+	}
+	emitterAddrBytes, err := hex.DecodeString(obs.EmitterAddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode emitter address: %v", err)
+	}
+	emitterAddr, err := vaa.BytesToAddress(emitterAddrBytes)
+	if err != nil {
+		return "", fmt.Errorf("failed to convert emitter address: %v", err)
+	}
+	v := &vaa.VAA{
+		Timestamp:        ts,
+		Nonce:            obs.Nonce,
+		EmitterChain:     vaa.ChainID(obs.EmitterChain),
+		EmitterAddress:   emitterAddr,
+		Sequence:         obs.Sequence,
+		ConsistencyLevel: obs.ConsistencyLevel,
+		Payload:          payload,
+	}
+	return v.SigningDigest().Hex(), nil
+}
+
+// buildDelegateSignaturesBroadcasts takes parsed wormholescan API observations and a VAA ID,
+// groups by VAA body hash to find the best set of signatures, then sub-groups by
+// MessagePublicationHash (which includes non-VAA fields like TxHash) to produce one
+// broadcast per unique message publication. This is necessary because a DelegateSignaturesBroadcast
+// carries common fields (including TxHash) that must be identical for all signatures in a batch.
+func buildDelegateSignaturesBroadcasts(vaaID string, apiObservations []wormholescanDelegateObservation) ([]*gossipv1.DelegateSignaturesBroadcast, error) {
+	parts := strings.Split(vaaID, "/")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("vaa_id must be in format chain/emitter/sequence")
+	}
+	chainID := parts[0]
+
+	if len(apiObservations) == 0 {
+		return nil, fmt.Errorf("no delegate observations provided")
+	}
+
+	// Step 1: Group observations by VAA body hash — pick the group with the most signatures.
+	type vaaGroup struct {
+		observations []wormholescanDelegateObservation
+	}
+	vaaGroups := make(map[string]*vaaGroup)
+	for i := range apiObservations {
+		h, err := delegateObservationVAAHash(&apiObservations[i])
+		if err != nil {
+			continue
+		}
+		g, ok := vaaGroups[h]
+		if !ok {
+			g = &vaaGroup{}
+			vaaGroups[h] = g
+		}
+		g.observations = append(g.observations, apiObservations[i])
+	}
+
+	var bestVAAGroup *vaaGroup
+	for _, g := range vaaGroups {
+		if bestVAAGroup == nil || len(g.observations) > len(bestVAAGroup.observations) {
+			bestVAAGroup = g
+		}
+	}
+
+	if bestVAAGroup == nil || len(bestVAAGroup.observations) == 0 {
+		return nil, fmt.Errorf("no valid observation groups found")
+	}
+
+	// Step 2: Sub-group by MessagePublicationHash so each broadcast has consistent common fields.
+	type mpGroup struct {
+		observations []wormholescanDelegateObservation
+	}
+	mpGroups := make(map[string]*mpGroup)
+	for _, obs := range bestVAAGroup.observations {
+		h := obs.MessagePublicationHash
+		if h == "" {
+			continue
+		}
+		g, ok := mpGroups[h]
+		if !ok {
+			g = &mpGroup{}
+			mpGroups[h] = g
+		}
+		g.observations = append(g.observations, obs)
+	}
+
+	chainIDParsed, err := vaa.StringToKnownChainID(chainID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid chain ID: %v", err)
+	}
+
+	// Step 3: Build one broadcast per MessagePublicationHash sub-group.
+	signedDelegateObservationPrefix := []byte("signed_delegate_observation_000000|")
+	broadcasts := make([]*gossipv1.DelegateSignaturesBroadcast, 0, len(mpGroups))
+
+	for _, mg := range mpGroups {
+		ref := mg.observations[0]
+
+		emitterAddrBytes, err := hex.DecodeString(ref.EmitterAddr)
+		if err != nil {
+			log.Printf("Warning: skipping group with invalid emitter address: %v", err)
+			continue
+		}
+
+		txHashBytes, err := base64.StdEncoding.DecodeString(ref.TxHash)
+		if err != nil {
+			log.Printf("Warning: skipping group with invalid tx hash: %v", err)
+			continue
+		}
+
+		payloadBytes, err := base64.StdEncoding.DecodeString(ref.Payload)
+		if err != nil {
+			log.Printf("Warning: skipping group with invalid payload: %v", err)
+			continue
+		}
+
+		var timestamp uint32
+		if ref.Timestamp != "" {
+			t, err := time.Parse(time.RFC3339, ref.Timestamp)
+			if err != nil {
+				log.Printf("Warning: skipping group with invalid timestamp: %v", err)
+				continue
+			}
+			timestamp = uint32(t.Unix()) // #nosec G115
+		}
+
+		signatures := make([]*gossipv1.DelegateSignature, 0, len(mg.observations))
+		for _, obs := range mg.observations {
+			guardianAddrHex := strings.TrimPrefix(obs.DelegatedGuardianAddr, "0x")
+			guardianAddrBytes, err := hex.DecodeString(guardianAddrHex)
+			if err != nil {
+				log.Printf("Warning: skipping observation with invalid guardian address %q: %v", obs.DelegatedGuardianAddr, err)
+				continue
+			}
+
+			if obs.Signature == "" {
+				log.Printf("Warning: skipping observation with empty signature for guardian %s", obs.DelegatedGuardianAddr)
+				continue
+			}
+			sigBytes, err := base64.StdEncoding.DecodeString(obs.Signature)
+			if err != nil {
+				log.Printf("Warning: skipping observation with invalid signature for guardian %s: %v", obs.DelegatedGuardianAddr, err)
+				continue
+			}
+			if len(sigBytes) != 65 {
+				log.Printf("Warning: skipping observation with unexpected signature length %d for guardian %s", len(sigBytes), obs.DelegatedGuardianAddr)
+				continue
+			}
+
+			var sentTimestamp int64
+			if obs.SentTimestamp != "" {
+				t, timeParseErr := time.Parse(time.RFC3339, obs.SentTimestamp)
+				if timeParseErr != nil {
+					continue
+				}
+				sentTimestamp = t.Unix()
+			}
+
+			// Reconstruct the DelegateObservation that was originally signed.
+			d := &gossipv1.DelegateObservation{
+				Timestamp:         timestamp,
+				Nonce:             ref.Nonce,
+				EmitterChain:      uint32(chainIDParsed), // #nosec G115
+				EmitterAddress:    emitterAddrBytes,
+				Sequence:          ref.Sequence,
+				ConsistencyLevel:  uint32(ref.ConsistencyLevel), // #nosec G115
+				Payload:           payloadBytes,
+				TxHash:            txHashBytes,
+				Unreliable:        obs.Unreliable,
+				IsReobservation:   obs.IsReobservation,
+				VerificationState: uint32(obs.VerificationState), // #nosec G115
+				GuardianAddr:      guardianAddrBytes,
+				SentTimestamp:     sentTimestamp,
+			}
+			b, err := proto.Marshal(d)
+			if err != nil {
+				continue
+			}
+
+			// Verify the signature over the reconstructed bytes.
+			digest := crypto.Keccak256Hash(append(signedDelegateObservationPrefix, b...))
+			pubKey, err := crypto.Ecrecover(digest.Bytes(), sigBytes)
+			if err != nil {
+				continue
+			}
+			signerAddr := ethcommon.BytesToAddress(crypto.Keccak256(pubKey[1:])[12:])
+			claimedAddr := ethcommon.BytesToAddress(guardianAddrBytes)
+			if signerAddr != claimedAddr {
+				continue
+			}
+
+			signatures = append(signatures, &gossipv1.DelegateSignature{
+				GuardianAddr:  guardianAddrBytes,
+				SentTimestamp: sentTimestamp,
+				Signature:     sigBytes,
+			})
+		}
+
+		if len(signatures) == 0 {
+			continue
+		}
+
+		broadcasts = append(broadcasts, &gossipv1.DelegateSignaturesBroadcast{
+			Timestamp:          timestamp,
+			Nonce:              ref.Nonce,
+			EmitterChain:       uint32(chainIDParsed), // #nosec G115
+			EmitterAddress:     emitterAddrBytes,
+			Sequence:           ref.Sequence,
+			ConsistencyLevel:   uint32(ref.ConsistencyLevel), // #nosec G115
+			Payload:            payloadBytes,
+			TxHash:             txHashBytes,
+			Unreliable:         ref.Unreliable,
+			IsReobservation:    ref.IsReobservation,
+			VerificationState:  uint32(ref.VerificationState), // #nosec G115
+			Signatures:         signatures,
+			BroadcastTimestamp: time.Now().Unix(),
+		})
+	}
+
+	if len(broadcasts) == 0 {
+		return nil, fmt.Errorf("no signatures passed verification")
+	}
+
+	return broadcasts, nil
+}
+
+func runBroadcastDelegateSignatures(cmd *cobra.Command, args []string) {
+	vaaID := args[0]
+
+	// Parse VAA ID: chain/emitter/sequence
+	parts := strings.Split(vaaID, "/")
+	if len(parts) != 3 {
+		log.Fatalf("vaa_id must be in format chain/emitter/sequence")
+	}
+	chainID := parts[0]
+	emitterAddr := parts[1]
+	sequence := parts[2]
+
+	if _, err := vaa.StringToKnownChainID(chainID); err != nil {
+		log.Fatalf("invalid chain ID %q: %v", chainID, err)
+	}
+
+	// Fetch delegate observations from wormholescan API.
+	apiURL := fmt.Sprintf("https://api.wormholescan.io/api/v1/observations/delegate/%s/%s/%s", chainID, emitterAddr, sequence)
+	httpReq, err := http.NewRequestWithContext(context.Background(), http.MethodGet, apiURL, nil)
+	if err != nil {
+		log.Fatalf("failed to create HTTP request: %v", err)
+	}
+	httpResp, err := (&http.Client{Timeout: 30 * time.Second}).Do(httpReq)
+	if err != nil {
+		log.Fatalf("failed to fetch delegate observations: %v", err)
+	}
+	defer httpResp.Body.Close()
+
+	if httpResp.StatusCode != http.StatusOK {
+		log.Fatalf("wormholescan API returned status %d", httpResp.StatusCode)
+	}
+
+	var apiObservations []wormholescanDelegateObservation
+	if jsonDecodeErr := json.NewDecoder(httpResp.Body).Decode(&apiObservations); jsonDecodeErr != nil {
+		log.Fatalf("failed to decode API response: %v", jsonDecodeErr)
+	}
+
+	broadcasts, err := buildDelegateSignaturesBroadcasts(vaaID, apiObservations)
+	if err != nil {
+		log.Fatalf("failed to build broadcasts: %v", err)
+	}
+
+	// Send to the guardian node for signing and p2p broadcast.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, c, err := getAdminClient(*clientSocketPath)
+	if err != nil {
+		log.Fatalf("failed to get admin client: %v", err)
+	}
+	defer conn.Close()
+
+	for i, broadcast := range broadcasts {
+		fmt.Printf("broadcasting batch %d/%d with %d verified delegate signatures for %s (size: %d bytes)\n",
+			i+1, len(broadcasts), len(broadcast.Signatures), vaaID, proto.Size(broadcast))
+
+		resp, err := c.BroadcastDelegateSignatures(ctx, &nodev1.BroadcastDelegateSignaturesRequest{
+			Broadcast: broadcast,
+		})
+		if err != nil {
+			log.Fatalf("failed to broadcast delegate signatures (batch %d): %s", i+1, err)
+		}
+
+		fmt.Println(resp.GetResponse())
+	}
+}
+
 func runChainGovernorStatus(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -650,7 +974,7 @@ func runChainGovernorReload(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -669,7 +993,7 @@ func runChainGovernorDropPendingVAA(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -690,7 +1014,7 @@ func runChainGovernorReleasePendingVAA(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -711,7 +1035,7 @@ func runChainGovernorResetReleaseTimer(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -720,10 +1044,10 @@ func runChainGovernorResetReleaseTimer(cmd *cobra.Command, args []string) {
 	// defaults to 1 day if num_days isn't specified
 	numDays := uint32(1)
 	if len(args) > 1 {
-		numDaysArg, err := strconv.Atoi(args[1])
+		numDaysArg, parseErr := strconv.Atoi(args[1])
 
-		if numDaysArg > math.MaxUint32 || err != nil {
-			log.Fatalf("invalid num_days: %v", err)
+		if numDaysArg > math.MaxUint32 || parseErr != nil {
+			log.Fatalf("invalid num_days: %v", parseErr)
 		}
 
 		numDays = uint32(numDaysArg) // #nosec G115 -- This is validated above
@@ -742,13 +1066,9 @@ func runChainGovernorResetReleaseTimer(cmd *cobra.Command, args []string) {
 }
 
 func runPurgePythNetVaas(cmd *cobra.Command, args []string) {
-	daysOld, err := strconv.Atoi(args[0])
+	daysOld, err := strconv.ParseUint(args[0], 10, 64)
 	if err != nil {
 		log.Fatalf("invalid DAYS_OLD: %v", err)
-	}
-
-	if daysOld < 0 {
-		log.Fatalf("DAYS_OLD may not be negative")
 	}
 
 	logOnly := false
@@ -763,7 +1083,7 @@ func runPurgePythNetVaas(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -779,135 +1099,6 @@ func runPurgePythNetVaas(cmd *cobra.Command, args []string) {
 	}
 
 	fmt.Println(resp.Response)
-}
-
-func runSignExistingVaa(cmd *cobra.Command, args []string) {
-	existingVAA := ethcommon.Hex2Bytes(args[0])
-	if len(existingVAA) == 0 {
-		log.Fatalf("vaa hex invalid")
-	}
-
-	newGsStrings := strings.Split(args[1], ",")
-
-	newGsIndex, err := strconv.ParseUint(args[2], 10, 32)
-	if err != nil {
-		log.Fatalf("invalid new guardian set index")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
-	if err != nil {
-		log.Fatalf("failed to get admin client: %v", err)
-	}
-	defer conn.Close()
-
-	msg := nodev1.SignExistingVAARequest{
-		Vaa:                 existingVAA,
-		NewGuardianAddrs:    newGsStrings,
-		NewGuardianSetIndex: uint32(newGsIndex),
-	}
-	resp, err := c.SignExistingVAA(ctx, &msg)
-	if err != nil {
-		log.Fatalf("failed to run SignExistingVAA RPC: %s", err)
-	}
-
-	fmt.Println(hex.EncodeToString(resp.Vaa))
-}
-
-func runSignExistingVaasFromCSV(cmd *cobra.Command, args []string) {
-	oldVAAFile, err := os.Open(args[0])
-	if err != nil {
-		log.Fatalf("failed to read old VAA db: %v", err)
-	}
-	defer oldVAAFile.Close()
-
-	newVAAFile, err := os.OpenFile(args[1], os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-	if err != nil {
-		log.Fatalf("failed to create new VAA db: %v", err)
-	}
-	defer newVAAFile.Close()
-	newVAAWriter := csv.NewWriter(newVAAFile)
-
-	newGsStrings := strings.Split(args[2], ",")
-
-	newGsIndex, err := strconv.ParseUint(args[3], 10, 32)
-	if err != nil {
-		log.Fatalf("invalid new guardian set index")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
-	if err != nil {
-		log.Fatalf("failed to get admin client: %v", err)
-	}
-	defer conn.Close()
-
-	// Scan the CSV once to make sure it won't fail while reading unless raced
-	oldVAAReader := csv.NewReader(oldVAAFile)
-	numOldVAAs := 0
-	for {
-		row, err := oldVAAReader.Read()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.Fatalf("failed to parse VAA CSV: %v", err)
-		}
-		if len(row) != 2 {
-			log.Fatalf("row [%d] does not have 2 elements", numOldVAAs)
-		}
-		numOldVAAs++
-	}
-
-	// Reset reader
-	_, err = oldVAAFile.Seek(0, io.SeekStart)
-	if err != nil {
-		log.Fatalf("failed to seek back in CSV file: %v", err)
-	}
-	oldVAAReader = csv.NewReader(oldVAAFile)
-
-	counter, i := 0, 0
-	for {
-		row, err := oldVAAReader.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			log.Fatalf("failed to parse VAA CSV: %v", err)
-		}
-		if len(row) != 2 {
-			log.Fatalf("row [%d] does not have 2 elements", i)
-		}
-		i++
-
-		if i%10 == 0 {
-			log.Printf("Processing VAA %d/%d", i, numOldVAAs)
-		}
-
-		vaaBytes := ethcommon.Hex2Bytes(row[1])
-		msg := nodev1.SignExistingVAARequest{
-			Vaa:                 vaaBytes,
-			NewGuardianAddrs:    newGsStrings,
-			NewGuardianSetIndex: uint32(newGsIndex),
-		}
-		resp, err := c.SignExistingVAA(ctx, &msg)
-		if err != nil {
-			log.Printf("signing VAA (%s)[%d] failed - skipping: %v", row[0], i, err)
-			continue
-		}
-		err = newVAAWriter.Write([]string{row[0], hex.EncodeToString(resp.Vaa)})
-		if err != nil {
-			log.Fatalf("failed to write new VAA to out db: %v", err)
-		}
-		counter++
-	}
-
-	log.Printf("Successfully signed %d out of %d VAAs", counter, numOldVAAs)
-	newVAAWriter.Flush()
 }
 
 // This exposes keccak256 as a command line utility, mostly for validating governance messages
@@ -937,7 +1128,7 @@ func runKeccak256Hash(cmd *cobra.Command, args []string) {
 
 func runNotaryBlackholeDelayedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -956,7 +1147,7 @@ func runNotaryBlackholeDelayedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryReleaseDelayedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -975,7 +1166,7 @@ func runNotaryReleaseDelayedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryRemoveBlackholedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -994,7 +1185,7 @@ func runNotaryRemoveBlackholedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryResetReleaseTimer(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -1019,7 +1210,7 @@ func runNotaryResetReleaseTimer(cmd *cobra.Command, args []string) {
 
 func runNotaryInjectDelayedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -1043,7 +1234,7 @@ func runNotaryInjectDelayedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryInjectBlackholedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -1060,7 +1251,7 @@ func runNotaryInjectBlackholedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryGetDelayedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -1079,7 +1270,7 @@ func runNotaryGetDelayedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryGetBlackholedMessage(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -1098,7 +1289,7 @@ func runNotaryGetBlackholedMessage(cmd *cobra.Command, args []string) {
 
 func runNotaryListDelayedMessages(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}
@@ -1118,7 +1309,7 @@ func runNotaryListDelayedMessages(cmd *cobra.Command, args []string) {
 
 func runNotaryListBlackholedMessages(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
-	conn, c, err := getAdminClient(ctx, *clientSocketPath)
+	conn, c, err := getAdminClient(*clientSocketPath)
 	if err != nil {
 		log.Fatalf("failed to get admin client: %v", err)
 	}

@@ -1,8 +1,4 @@
-import {
-  normalizeSuiAddress,
-  SUI_CLOCK_OBJECT_ID,
-  TransactionBlock,
-} from "@mysten/sui.js";
+import { Transaction } from "@mysten/sui/transactions";
 import yargs from "yargs";
 import {
   executeTransactionBlock,
@@ -10,7 +6,9 @@ import {
   getSigner,
   logTransactionDigest,
   logTransactionSender,
+  normalizeSuiAddress,
   setMaxGasBudgetDevnet,
+  SUI_CLOCK_OBJECT_ID,
 } from "../../chains/sui";
 import { NETWORK_OPTIONS, NETWORKS, RPC_OPTIONS } from "../../consts";
 import { YargsAddCommandsFn } from "../Yargs";
@@ -65,18 +63,18 @@ export const addPublishMessageCommands: YargsAddCommandsFn = (
       const privateKey = argv["private-key"];
       const rpc = argv.rpc ?? NETWORKS[network].Sui.rpc;
 
-      const provider = getProvider(network, rpc);
-      const signer = getSigner(provider, network, privateKey);
+      const client = getProvider(network, rpc);
+      const signer = getSigner(client, network, privateKey);
 
       // Publish message
-      const tx = new TransactionBlock();
+      const tx = new Transaction();
       setMaxGasBudgetDevnet(network, tx);
       tx.moveCall({
         target: `${packageId}::sender::send_message_entry`,
         arguments: [
           tx.object(stateObjectId),
           tx.object(wormholeStateObjectId),
-          tx.pure(message),
+          tx.pure("string", message),
           tx.object(SUI_CLOCK_OBJECT_ID),
         ],
       });
@@ -88,7 +86,7 @@ export const addPublishMessageCommands: YargsAddCommandsFn = (
       const event = res.events?.find(
         (e) =>
           normalizeSuiAddress(e.packageId) === normalizeSuiAddress(packageId) &&
-          e.type.includes("publish_message::WormholeMessage")
+          e.eventType.includes("publish_message::WormholeMessage")
       );
       if (!event) {
         throw new Error(
@@ -99,13 +97,28 @@ export const addPublishMessageCommands: YargsAddCommandsFn = (
 
       logTransactionDigest(res);
       logTransactionSender(res);
+      // In the gRPC event JSON, `payload` (vector<u8>) is base64 while
+      // `sender` (ID) is a 0x-prefixed hex string.
+      const parsed = event.json as any;
+      if (typeof parsed?.payload !== "string") {
+        throw new Error(
+          `Unexpected event payload in ${event.eventType}: ` +
+            JSON.stringify(event.json, null, 2)
+        );
+      }
+      if (typeof parsed.sender !== "string") {
+        throw new Error(
+          `Unexpected event emitter in ${event.eventType}: ` +
+            JSON.stringify(event.json, null, 2)
+        );
+      }
       console.log("Publish message succeeded:", {
         sender: event.sender,
-        type: event.type,
-        payload: Buffer.from(event.parsedJson?.payload).toString(),
-        emitter: Buffer.from(event.parsedJson?.sender).toString("hex"),
-        sequence: event.parsedJson?.sequence,
-        nonce: event.parsedJson?.nonce,
+        type: event.eventType,
+        payload: Buffer.from(parsed.payload, "base64").toString(),
+        emitter: parsed.sender.replace(/^0x/, ""),
+        sequence: parsed.sequence,
+        nonce: parsed.nonce,
       });
     }
   );
